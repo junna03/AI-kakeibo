@@ -1,0 +1,92 @@
+/* =============================================
+   かけいぼ - スタイルシート
+   ============================================= */
+
+@import url('https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@400;500;700&family=Klee+One:wght@400;600&display=swap');
+
+/* ── リセット ── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: #FFF5FA;
+  font-family: 'Zen Maru Gothic', 'Noto Sans JP', sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+input, select, textarea, button {
+  font-family: 'Zen Maru Gothic', 'Noto Sans JP', sans-serif;
+}
+
+/* ── フォーカス ── */
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: #F48FB1 !important;
+  box-shadow: 0 0 0 3px #FFD6E7 !important;
+  outline: none;
+}
+
+/* ── ボタン ── */
+button:hover  { filter: brightness(1.04); transform: translateY(-1px); }
+button:active { filter: brightness(.95);  transform: scale(.97) translateY(0); }
+
+/* ── スクロールバー ── */
+::-webkit-scrollbar       { width: 4px; }
+::-webkit-scrollbar-thumb { background: #FFD6E7; border-radius: 4px; }
+
+/* ── ロード画面（Babel コンパイル中） ── */
+#app-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  background: linear-gradient(160deg, #FFE0EC 0%, #EDD5FF 50%, #C5EDF5 100%);
+  gap: 14px;
+}
+#app-loading .loading-icon {
+  font-size: 52px;
+  animation: floatAnim 2s ease-in-out infinite;
+}
+#app-loading p {
+  font-size: 15px;
+  letter-spacing: 4px;
+  color: #A08AB8;
+}
+#root:empty + #app-loading,
+#root:not(:empty) ~ #app-loading { display: none; }
+
+/* ── アニメーション ── */
+@keyframes floatAnim {
+  0%, 100% { transform: translateY(0); }
+  50%       { transform: translateY(-8px); }
+}
+
+@keyframes popIn {
+  0%   { transform: translateX(-50%) scale(.7); opacity: 0; }
+  70%  { transform: translateX(-50%) scale(1.05); }
+  100% { transform: translateX(-50%) scale(1); opacity: 1; }
+}
+
+@keyframes shakeX {
+  0%,  100% { transform: translateX(0); }
+  20%, 60%  { transform: translateX(-8px); }
+  40%, 80%  { transform: translateX(8px); }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(12px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+@keyframes unlock {
+  to { opacity: 0; transform: scale(1.05); }
+}
+
+/* ── ユーティリティ ── */
+.slideUp { animation: slideUp .3s ease forwards; }
+.pop     { animation: popIn  .35s ease forwards; }
