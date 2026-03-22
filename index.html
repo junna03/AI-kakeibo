@@ -2,16 +2,21 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>🌸 かけいぼ</title>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
-    /* 🌸 読み込み中画面のスタイル */
-    body { background: #FFF5FA; font-family: sans-serif; margin: 0; }
-    #app-loading { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #FFE0EC; z-index: 9999; }
-    .icon { font-size: 50px; animation: bounce 2s infinite; }
-    @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+    /* 📱 スマホ風のデザインに固定 */
+    body { background: #FFF5FA; font-family: sans-serif; margin: 0; display: flex; justify-content: center; }
+    #root { width: 100%; max-width: 480px; min-height: 100vh; background: white; box-shadow: 0 0 20px rgba(0,0,0,0.05); }
+    
+    .header { background: linear-gradient(135deg, #FFE0EC, #EDD5FF); padding: 20px; text-align: center; color: #5C3D6B; }
+    .card { margin: 15px; padding: 20px; border-radius: 20px; border: 1px solid #F0D8F0; background: #fff; }
+    .btn { background: #F48FB1; color: white; border: none; padding: 12px 20px; border-radius: 25px; width: 100%; font-weight: bold; cursor: pointer; margin-top: 10px; }
+    .btn-sub { background: none; color: #A08AB8; border: none; font-size: 12px; margin-top: 15px; cursor: pointer; text-decoration: underline; }
+    input { width: 100%; padding: 12px; margin: 10px 0; border: 1.5px solid #F0D8F0; border-radius: 12px; box-sizing: border-box; }
   </style>
 </head>
 <body>
@@ -20,41 +25,67 @@
   <script type="text/babel">
     const { useState, useEffect } = React;
 
-    // ─── 【重要】ここが「🌸」を突破するスイッチ ───
-    // 一度だけ「true」にして保存→ブラウザで実行してください。
-    // 設定画面が出たら「false」に戻して大丈夫です。
-    const FORCE_CLEAN = true; 
-
     function App() {
-      const [step, setStep] = useState('loading');
+      const [view, setView] = useState('loading'); // loading, setup, main
 
       useEffect(() => {
-        if (FORCE_CLEAN) {
-          localStorage.clear();
-          sessionStorage.clear();
+        // 起動時にデータをチェック
+        const savedKey = localStorage.getItem('kakeibo-api-key');
+        const skipped = localStorage.getItem('kakeibo-api-skipped');
+        
+        if (savedKey || skipped === 'true') {
+          setView('main');
+        } else {
+          setView('setup');
         }
-        // 強制的に「APIキー入力画面」へ進める
-        setStep('setup');
       }, []);
 
-      if (step === 'loading') return (
-        <div id="app-loading"><div className="icon">🌸</div><p>よみこみ中...</p></div>
+      // APIキーを後回しにして進む
+      const skipApiKey = () => {
+        localStorage.setItem('kakeibo-api-skipped', 'true');
+        setView('main');
+      };
+
+      if (view === 'loading') return <div style={{textAlign:'center', padding:50}}>🌸</div>;
+
+      // 🔑 設定画面（スキップボタン付き）
+      if (view === 'setup') return (
+        <div>
+          <div className="header"><h1>🌸 設定</h1></div>
+          <div className="card">
+            <p style={{fontSize:14, color:'#5C3D6B'}}>APIキーを入れるとAIがレシートを読んでくれますが、<b>入れなくても家計簿は使えます！</b></p>
+            <input id="key-input" type="password" placeholder="sk-ant-..." />
+            <button className="btn" onClick={() => {
+              const val = document.getElementById('key-input').value;
+              if(val.startsWith('sk-ant-')){
+                localStorage.setItem('kakeibo-api-key', val);
+                setView('main');
+              } else { alert("キーを入力するか、下のスキップを押してください"); }
+            }}>キーを保存してはじめる</button>
+            
+            <center><button className="btn-sub" onClick={skipApiKey}>今は設定せずに、すぐにはじめる →</button></center>
+          </div>
+        </div>
       );
 
+      // 🏠 メイン画面（スマホ仕様）
       return (
-        <div style={{ padding: 30, textAlign: 'center' }}>
-          <h1>🌸 かけいぼ設定</h1>
-          <p>古いデータを掃除しました！</p>
-          <div style={{ background: 'white', padding: 20, borderRadius: 15, border: '2px solid #F48FB1' }}>
-            <p>ここにAPIキーを入力してください</p>
-            <input type="password" placeholder="sk-ant-..." style={{ width: '80%', padding: 10, margin: '10px 0' }} />
-            <button onClick={() => alert('保存しました（デモ）')} style={{ background: '#F48FB1', color: 'white', padding: '10px 20px', border: 'none', borderRadius: 20 }}>
-              保存
-            </button>
+        <div>
+          <div className="header">
+            <h1 style={{letterSpacing:5}}>🌸 かけいぼ</h1>
           </div>
-          <p style={{ marginTop: 20, fontSize: 12, color: '#aaa' }}>
-            ※この画面が出たら成功です。
-          </p>
+          
+          <div className="card">
+            <h2 style={{fontSize:16, color:'#5C3D6B', marginBottom:10}}>今日のしゅっぴ</h2>
+            <p style={{fontSize:13, color:'#A08AB8'}}>ここに入力してね✨</p>
+            <input type="text" placeholder="例：コンビニ 500円" />
+            <button className="btn">保存する</button>
+          </div>
+
+          <div style={{padding:'0 20px', fontSize:12, color:'#CDB8DC', textAlign:'center'}}>
+            <p>※スマホで見やすいサイズに固定しています</p>
+            <button onClick={() => { localStorage.clear(); location.reload(); }} style={{background:'none', border:'none', color:'#CDB8DC', marginTop:20}}>データをリセットして設定に戻る</button>
+          </div>
         </div>
       );
     }
