@@ -1,0 +1,1180 @@
+// =============================================
+//  かけいぼ - アプリ本体 (script.js)
+//  React は CDN から読み込まれています
+// =============================================
+
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ─── API キー管理 ───────────────────────────────────────────
+// ※ この変数に Anthropic API キーが入ります
+let CLAUDE_API_KEY = localStorage.getItem('kakeibo-api-key') || '';
+
+// ─── デフォルトカテゴリ ────────────────────────────────────
+const DEFAULT_CATEGORIES = [
+  { id:"food",      name:"食費",          icon:"🍽️", color:"#FFB3C6" },
+  { id:"grocery",   name:"日用品",        icon:"🛒", color:"#FFDAB9" },
+  { id:"transport", name:"交通費",        icon:"🚃", color:"#AEC6CF" },
+  { id:"health",    name:"医療・健康",    icon:"💊", color:"#B5EAD7" },
+  { id:"fashion",   name:"衣類・美容",    icon:"👗", color:"#DDA0DD" },
+  { id:"leisure",   name:"娯楽・趣味",    icon:"🎮", color:"#FFF0AA" },
+  { id:"telecom",   name:"通信・サブスク",icon:"📱", color:"#A8D8F0" },
+  { id:"dining",    name:"外食・飲み会",  icon:"🍜", color:"#FFCBA4" },
+  { id:"education", name:"教育・書籍",    icon:"📚", color:"#C3B1E1" },
+  { id:"other",     name:"その他",        icon:"✨", color:"#E0E0EE" },
+];
+
+const PRESET_ICONS = [
+  "🍽️","🍜","🍱","🍰","☕","🍺","🛒","🧴","💊","🏥",
+  "🚃","🚗","✈️","🚲","⛽","👗","👠","💄","💅","👔",
+  "🎮","🎵","🎬","📚","🎨","🏋️","⚽","🎤","🎹","🎯",
+  "📱","💻","📷","🎁","🌸","🏠","💰","✨","🎪","🎀",
+  "🐶","🐱","🐰","🐾","🦮","🐟","🌿","💉","🧸","👶",
+  "🍼","🎒","🖍️","🧩","🎠","🎡","🏫","🩰","🥋","🎻",
+  "🎺","♟️","🧘","🏊","🎽","🌊","⛷️","🧗","🎭","🎪",
+];
+
+const PRESET_COLORS = [
+  "#FFB3C6","#FFDAB9","#AEC6CF","#B5EAD7","#DDA0DD",
+  "#FFF0AA","#A8D8F0","#FFCBA4","#C3B1E1","#FFD4E8",
+  "#C8F7C5","#FEDBD0","#D4E6F1","#FAD7A0","#D2B4DE",
+];
+
+// ─── ユーティリティ ────────────────────────────────────────
+const fmt = n => `¥${Math.round(Number(n)||0).toLocaleString("ja-JP")}`;
+const todayStr = () => new Date().toISOString().split("T")[0];
+function addDays(d,n){const dt=new Date(d);dt.setDate(dt.getDate()+n);return dt.toISOString().split("T")[0];}
+function getMonday(d){const dt=new Date(d);const day=dt.getDay();dt.setDate(dt.getDate()-(day===0?6:day-1));return dt.toISOString().split("T")[0];}
+function getMonthStart(d){const dt=new Date(d);return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-01`;}
+function getMonthEnd(d){const dt=new Date(d);return new Date(dt.getFullYear(),dt.getMonth()+1,0).toISOString().split("T")[0];}
+function fmtDate(d){const dt=new Date(d);return `${dt.getMonth()+1}/${dt.getDate()}(${["日","月","火","水","木","金","土"][dt.getDay()]})`;}
+function fmtMonth(d){const dt=new Date(d);return `${dt.getFullYear()}年${dt.getMonth()+1}月`;}
+function darken(hex){const n=parseInt(hex.slice(1),16);const r=((n>>16)&255)*0.55,g=((n>>8)&255)*0.55,b=(n&255)*0.55;return `rgb(${r|0},${g|0},${b|0})`;}
+
+// ─── ストレージ (localStorage) ─────────────────────────────
+async function sg(key)       { return localStorage.getItem(key); }
+async function ss(key, val)  { localStorage.setItem(key, val); }
+
+function monthKey(dateStr){ return "mexp:"+dateStr.substring(0,7); }
+function dayKey(dateStr)  { return dateStr.substring(8,10); }
+
+async function getMonthData(dateStr){
+  const raw = await sg(monthKey(dateStr));
+  return raw ? JSON.parse(raw) : {};
+}
+
+async function saveDayData(dateStr, items){
+  const data = await getMonthData(dateStr);
+  if(items.length===0){ delete data[dayKey(dateStr)]; }
+  else { data[dayKey(dateStr)] = items; }
+  await ss(monthKey(dateStr), JSON.stringify(data));
+  if(items.length>0){ await ss(`exp:${dateStr}`, JSON.stringify(items)); }
+  else { localStorage.removeItem(`exp:${dateStr}`); }
+}
+
+async function loadDayData(dateStr){
+  const data = await getMonthData(dateStr);
+  const fromMonth = data[dayKey(dateStr)] || null;
+  if(fromMonth) return fromMonth;
+  const old = await sg(`exp:${dateStr}`);
+  return old ? JSON.parse(old) : [];
+}
+
+async function loadMonthData(monthStart){
+  const raw = await sg(monthKey(monthStart));
+  if(raw){
+    const data = JSON.parse(raw);
+    const out = {};
+    const year  = monthStart.substring(0,4);
+    const month = monthStart.substring(5,7);
+    Object.entries(data).forEach(([dd,items])=>{ out[`${year}-${month}-${dd}`] = items; });
+    return out;
+  }
+  const end = getMonthEnd(monthStart);
+  const dates = [];
+  for(let d=monthStart; d<=end; d=addDays(d,1)) dates.push(d);
+  const results = await Promise.all(dates.map(d=>sg(`exp:${d}`)));
+  const out = {};
+  dates.forEach((d,i)=>{ if(results[i]) out[d] = JSON.parse(results[i]); });
+  if(Object.keys(out).length>0){
+    const newData = {};
+    Object.entries(out).forEach(([d,items])=>{ newData[dayKey(d)] = items; });
+    await ss(monthKey(monthStart), JSON.stringify(newData));
+  }
+  return out;
+}
+
+// ─── メモリキャッシュ ──────────────────────────────────────
+const monthCache = {};
+
+async function loadMonthDataCached(monthStart, forceReload=false){
+  if(!forceReload && monthCache[monthStart]) return monthCache[monthStart];
+  const data = await loadMonthData(monthStart);
+  monthCache[monthStart] = data;
+  return data;
+}
+
+function invalidateMonthCache(dateStr){ delete monthCache[getMonthStart(dateStr)]; }
+
+async function loadRange(start, end){
+  const months = new Set();
+  for(let d=start; d<=end; d=addDays(d,1)) months.add(getMonthStart(d));
+  const monthDataArr = await Promise.all([...months].map(m=>loadMonthDataCached(m)));
+  const merged = {};
+  monthDataArr.forEach(md=>Object.assign(merged,md));
+  const out = {};
+  Object.entries(merged).forEach(([d,items])=>{ if(d>=start&&d<=end) out[d]=items; });
+  return out;
+}
+
+// ─── Claude API 呼び出し ───────────────────────────────────
+async function callClaude(messages, maxTokens=1000){
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": CLAUDE_API_KEY,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:maxTokens, messages }),
+  });
+  const data = await res.json();
+  if(data.error) throw new Error(data.error.message || "API エラー");
+  return data.content?.map(b=>b.text||"").join("\n") || "";
+}
+
+async function parseNaturalInput(text, categories){
+  const catList = categories.map(c=>`"${c.id}":${c.name}`).join(",");
+  const raw = await callClaude([{role:"user",content:
+    `家計簿。以下のテキストから支出を読み取りJSON配列のみ返してください（説明不要）。\n`+
+    `テキスト:\n"${text}"\n`+
+    `カテゴリ:{${catList}}\n`+
+    `ルール:スーパー/コンビニ/食料品→food,電車/バス→transport,薬局/病院→health,服/化粧品→fashion,ゲーム/映画→leisure,ネット/サブスク→telecom,レストラン/外食→dining,本/勉強→education。\n`+
+    `複数行は行ごとに別エントリ。noteは15文字以内。\n`+
+    `[{"categoryId":"...","amount":数値,"note":"..."}]`
+  }], 400);
+  try{
+    const arr = raw.match(/\[[\s\S]*\]/);
+    if(arr) return JSON.parse(arr[0]);
+    const obj = raw.match(/\{[\s\S]*?\}/);
+    return obj ? [JSON.parse(obj[0])] : null;
+  }catch{ return null; }
+}
+
+async function parseReceipt(base64Image, categories){
+  const catList = categories.map(c=>`"${c.id}":${c.name}`).join(",");
+  const raw = await callClaude([{role:"user",content:[
+    {type:"image", source:{type:"base64", media_type:"image/jpeg", data:base64Image}},
+    {type:"text", text:`レシートから支出を読み取りJSON配列のみ返してください。カテゴリ:{${catList}} 合算しカテゴリ別に1〜3件で。[{"categoryId":"...","amount":数値,"note":"..."}]`}
+  ]}], 400);
+  try{ const m=raw.match(/\[[\s\S]*\]/); return m?JSON.parse(m[0]):null; }catch{ return null; }
+}
+
+function summarize(settings, expByDate){
+  const catMap = {};
+  settings.categories.forEach(c=>{ catMap[c.id]={...c,total:0,items:[]}; });
+  let grand = 0;
+  Object.entries(expByDate).forEach(([date,items])=>{
+    (items||[]).forEach(item=>{
+      if(catMap[item.categoryId]){ catMap[item.categoryId].total+=Number(item.amount); catMap[item.categoryId].items.push({date,...item}); }
+      grand += Number(item.amount);
+    });
+  });
+  return { catMap, grandTotal:grand };
+}
+
+// ─── デザイントークン ──────────────────────────────────────
+const C = {
+  bg:"#FFF5FA", bgCard:"#FFFFFF", bgSoft:"#FFF0F7",
+  pink:"#F48FB1", pinkL:"#FFD6E7", pinkD:"#E91E8C",
+  mint:"#A8E6CF", lavender:"#C3B1E1", peach:"#FFCBA4", sky:"#AEC6CF",
+  text:"#5C3D6B", textSub:"#A08AB8", textLight:"#CDB8DC",
+  border:"#F0D8F0", shadow:"rgba(244,143,177,0.18)",
+};
+const font = "'Zen Maru Gothic','Noto Sans JP',sans-serif";
+
+// ─── 共通コンポーネント ────────────────────────────────────
+function PillBtn({children, onClick, variant="primary", size="md", disabled, full, style:ex={}}){
+  const bg =
+    variant==="primary"  ? `linear-gradient(135deg,#F9A8C9 0%,${C.pink} 100%)` :
+    variant==="mint"     ? `linear-gradient(135deg,#C8F7E8 0%,${C.mint} 100%)` :
+    variant==="lavender" ? `linear-gradient(135deg,#E0D4FF 0%,${C.lavender} 100%)` :
+    variant==="danger"   ? "linear-gradient(135deg,#FFB3C6,#F48FB1)" :
+    variant==="ghost"    ? "transparent" : "white";
+  const col    = ["primary","mint","lavender","danger"].includes(variant) ? C.text : C.textSub;
+  const border = variant==="ghost" ? `1.5px dashed ${C.border}` : `1.5px solid ${C.border}`;
+  const pd     = size==="sm" ? "5px 12px" : size==="lg" ? "14px 32px" : "10px 20px";
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      padding:pd, borderRadius:30, border, cursor:disabled?"not-allowed":"pointer",
+      background:bg, color:col, fontFamily:font, fontSize:size==="sm"?12:13, fontWeight:700,
+      letterSpacing:0.5, transition:"all .18s", opacity:disabled?.55:1,
+      boxShadow:["primary","mint","lavender"].includes(variant)?`0 4px 14px ${C.shadow}`:"none",
+      whiteSpace:"nowrap", width:full?"100%":"auto", display:"inline-flex",
+      alignItems:"center", justifyContent:"center", gap:4, ...ex
+    }}>{children}</button>
+  );
+}
+
+function Tag({icon, name, color, small}){
+  return (
+    <span style={{display:"inline-flex",alignItems:"center",gap:3,
+      padding:small?"2px 8px":"4px 11px", borderRadius:20,
+      fontSize:small?11:12, fontWeight:700,
+      background:color+"30", color:darken(color), border:`1px solid ${color}55`}}>
+      {icon} {name}
+    </span>
+  );
+}
+
+function Toast({msg}){
+  if(!msg) return null;
+  return (
+    <div style={{position:"fixed",top:70,left:"50%",transform:"translateX(-50%)",zIndex:999,
+      background:"white",border:`1.5px solid ${C.pinkL}`,borderRadius:20,
+      padding:"10px 22px",boxShadow:`0 8px 28px ${C.shadow}`,
+      fontWeight:700,fontSize:13,color:C.text,whiteSpace:"nowrap",
+      animation:"popIn .3s ease forwards"}}>
+      {msg}
+    </div>
+  );
+}
+
+// ─── API キー設定画面 ──────────────────────────────────────
+function ApiKeyScreen({onSave}){
+  const [key,  setKey]  = useState('');
+  const [error,setError]= useState('');
+
+  const save = () => {
+    const trimmed = key.trim();
+    if(!trimmed.startsWith('sk-ant-')){ setError('APIキーは「sk-ant-」で始まります'); return; }
+    CLAUDE_API_KEY = trimmed;
+    localStorage.setItem('kakeibo-api-key', trimmed);
+    onSave();
+  };
+
+  return (
+    <div style={{minHeight:"100vh",background:"linear-gradient(160deg,#FFE0EC,#EDD5FF,#C5EDF5)",
+      display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+      fontFamily:font, padding:24}}>
+      <div style={{fontSize:52,marginBottom:8,animation:"floatAnim 3s ease-in-out infinite"}}>🌸</div>
+      <h1 style={{fontFamily:"'Klee One',serif",fontSize:22,fontWeight:600,color:C.text,letterSpacing:6,marginBottom:6}}>かけいぼ</h1>
+      <p style={{fontSize:12,color:C.textSub,marginBottom:32,letterSpacing:1,textAlign:"center"}}>はじめに Anthropic API キーを設定してください</p>
+
+      <div style={{background:"white",borderRadius:24,padding:"28px 24px",
+        boxShadow:"0 8px 32px rgba(244,143,177,0.2)",border:"1px solid #F0D8F0",
+        width:"100%",maxWidth:360}}>
+
+        <p style={{fontSize:13,color:C.text,fontWeight:700,marginBottom:8}}>🔑 API キーの取得方法</p>
+        <ol style={{fontSize:12,color:C.textSub,lineHeight:2,marginBottom:16,paddingLeft:16}}>
+          <li><a href="https://console.anthropic.com" target="_blank" style={{color:C.pink}}>console.anthropic.com</a> にアクセス</li>
+          <li>アカウント登録 / ログイン</li>
+          <li>「API Keys」→「Create Key」</li>
+          <li>表示されたキーをコピー</li>
+        </ol>
+
+        <p style={{fontSize:12,fontWeight:700,color:C.textSub,marginBottom:6}}>API キーを貼り付け</p>
+        <input
+          type="password"
+          placeholder="sk-ant-api03-..."
+          value={key}
+          onChange={e=>{ setKey(e.target.value); setError(''); }}
+          onKeyDown={e=>e.key==="Enter"&&save()}
+          style={{width:"100%",padding:"11px 14px",border:`1.5px solid ${error?'#FF8FA3':C.border}`,
+            borderRadius:13,fontSize:14,background:"#FFF8FB",color:C.text,marginBottom:6}}
+        />
+        {error && <p style={{fontSize:11,color:"#E57373",marginBottom:8}}>{error}</p>}
+
+        <button onClick={save} style={{width:"100%",padding:"13px",borderRadius:30,border:"none",
+          cursor:"pointer",background:"linear-gradient(135deg,#F9A8C9,#F48FB1)",
+          color:"white",fontFamily:font,fontSize:14,fontWeight:700,letterSpacing:1,
+          boxShadow:"0 4px 14px rgba(244,143,177,0.35)",transition:"all .18s",marginBottom:12}}>
+          ✨ 設定してはじめる
+        </button>
+
+        <p style={{fontSize:11,color:C.textLight,textAlign:"center",lineHeight:1.6}}>
+          キーはこのデバイスの<br/>ブラウザにのみ保存されます
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ─── 合言葉ロック画面 ──────────────────────────────────────
+const PASSPHRASE = "AI家計簿";
+
+function LockScreen({onUnlock}){
+  const [input,    setInput]    = useState('');
+  const [shake,    setShake]    = useState(false);
+  const [unlocking,setUnlocking]= useState(false);
+
+  const tryUnlock = () => {
+    if(input===PASSPHRASE){
+      setUnlocking(true);
+      setTimeout(()=>onUnlock(), 600);
+    } else {
+      setShake(true);
+      setTimeout(()=>setShake(false), 500);
+      setInput('');
+    }
+  };
+
+  return (
+    <div style={{minHeight:"100vh",background:"linear-gradient(160deg,#FFE0EC,#EDD5FF,#C5EDF5)",
+      display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+      fontFamily:font, padding:24, animation:unlocking?"unlock .6s ease forwards":"none"}}>
+      <div style={{fontSize:52,marginBottom:8,animation:"floatAnim 3s ease-in-out infinite"}}>🌸</div>
+      <h1 style={{fontFamily:"'Klee One',serif",fontSize:24,fontWeight:600,color:C.text,letterSpacing:6,marginBottom:4}}>かけいぼ</h1>
+      <p style={{fontSize:12,color:C.textSub,marginBottom:36,letterSpacing:2}}>合言葉を入力してください</p>
+
+      <div style={{background:"white",borderRadius:24,padding:"28px 24px",
+        boxShadow:"0 8px 32px rgba(244,143,177,0.2)",border:"1px solid #F0D8F0",
+        width:"100%",maxWidth:320,
+        animation:shake?"shakeX .4s ease":"none"}}>
+        <input type="text" placeholder="合言葉を入力…" value={input}
+          onChange={e=>setInput(e.target.value)}
+          onKeyDown={e=>e.key==="Enter"&&tryUnlock()}
+          autoFocus
+          style={{width:"100%",padding:"12px 16px",border:"1.5px solid #F0D8F0",borderRadius:14,
+            fontSize:16,fontFamily:font,background:"#FFF8FB",color:C.text,
+            textAlign:"center",letterSpacing:3,marginBottom:14}}/>
+        <button onClick={tryUnlock} style={{width:"100%",padding:"13px",borderRadius:30,border:"none",
+          cursor:"pointer",background:"linear-gradient(135deg,#F9A8C9,#F48FB1)",
+          color:"white",fontFamily:font,fontSize:14,fontWeight:700,letterSpacing:1,
+          boxShadow:"0 4px 14px rgba(244,143,177,0.35)",transition:"all .18s"}}>
+          ✨ ひらく
+        </button>
+      </div>
+      <p style={{fontSize:11,color:"#CDB8DC",marginTop:24,letterSpacing:1}}>合言葉を知っている人だけが使えます</p>
+    </div>
+  );
+}
+
+// ─── メインアプリ ──────────────────────────────────────────
+function App(){
+  const [tab,        setTab]        = useState("daily");
+  const [settings,   setSettings]   = useState(null);
+  const [unlocked,   setUnlocked]   = useState(false);
+  const [hasApiKey,  setHasApiKey]  = useState(!!CLAUDE_API_KEY);
+  const [dataVersion,setDataVersion]= useState(0);
+
+  useEffect(()=>{
+    const ok = sessionStorage.getItem("kakeibo-unlocked");
+    if(ok==="1") setUnlocked(true);
+  },[]);
+
+  useEffect(()=>{
+    if(!unlocked) return;
+    (async()=>{
+      const raw = await sg("kakeibo-settings");
+      if(raw){ setSettings(JSON.parse(raw)); }
+      else { const init={categories:DEFAULT_CATEGORIES,fixedCosts:[]};setSettings(init);await ss("kakeibo-settings",JSON.stringify(init)); }
+      const thisMonth = getMonthStart(todayStr());
+      const lastMonth = (()=>{ const d=new Date(thisMonth);d.setMonth(d.getMonth()-1);return getMonthStart(d.toISOString().split("T")[0]); })();
+      loadMonthDataCached(thisMonth);
+      loadMonthDataCached(lastMonth);
+    })();
+  },[unlocked]);
+
+  const handleUnlock   = ()=>{ sessionStorage.setItem("kakeibo-unlocked","1"); setUnlocked(true); };
+  const saveSettings   = useCallback(async s=>{ setSettings(s); await ss("kakeibo-settings",JSON.stringify(s)); },[]);
+  const handleApiKeySave = () => setHasApiKey(true);
+
+  if(!hasApiKey)  return <ApiKeyScreen onSave={handleApiKeySave}/>;
+  if(!unlocked)   return <LockScreen   onUnlock={handleUnlock}/>;
+  if(!settings)   return (
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",
+      height:"100vh",background:C.bg,fontFamily:font,color:C.pink,gap:14}}>
+      <div style={{fontSize:46,animation:"floatAnim 2s ease-in-out infinite"}}>🌸</div>
+      <p style={{fontSize:15,letterSpacing:4,color:C.textSub}}>よみこみ中…</p>
+    </div>
+  );
+
+  const tabs = [["daily","📅","今日"],["calendar","🗓️","カレンダー"],["reports","✨","レポート"],["setup","🌸","設定"]];
+
+  return (
+    <div style={{maxWidth:480,margin:"0 auto",minHeight:"100vh",background:C.bg,display:"flex",flexDirection:"column",fontFamily:font}}>
+      <header style={{background:"linear-gradient(135deg,#FFE0EC 0%,#EDD5FF 55%,#C5EDF5 100%)",padding:"18px 20px 14px",borderBottom:`1px solid ${C.border}`}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:10}}>
+          <span style={{fontSize:26,animation:"floatAnim 3s ease-in-out infinite"}}>🌸</span>
+          <h1 style={{fontFamily:"'Klee One',serif",fontSize:21,fontWeight:600,color:C.text,letterSpacing:7}}>かけいぼ</h1>
+          <span style={{fontSize:26,animation:"floatAnim 3s ease-in-out infinite",animationDelay:".6s"}}>💕</span>
+        </div>
+      </header>
+
+      <nav style={{display:"flex",background:"white",borderBottom:`1px solid ${C.border}`,boxShadow:`0 2px 10px ${C.shadow}`,position:"sticky",top:0,zIndex:30}}>
+        {tabs.map(([k,ic,lb])=>(
+          <button key={k} onClick={()=>setTab(k)} style={{
+            flex:1,padding:"11px 4px 10px",border:"none",cursor:"pointer",
+            fontFamily:font,fontSize:11,fontWeight:700,letterSpacing:.5,lineHeight:1.5,
+            background:tab===k?"linear-gradient(to bottom,#FFF0F7,white)":"transparent",
+            color:tab===k?C.text:C.textLight,
+            borderBottom:tab===k?`2.5px solid ${C.pink}`:"2.5px solid transparent",transition:"all .2s",
+          }}>{ic}<br/>{lb}</button>
+        ))}
+      </nav>
+
+      <div style={{flex:1,overflowY:"auto",padding:"14px 13px 44px"}}>
+        {tab==="setup"    && <SetupView   settings={settings} onSave={saveSettings} onApiKeyChange={()=>setHasApiKey(false)}/>}
+        {tab==="daily"    && <DailyView   settings={settings} onDataChange={()=>setDataVersion(v=>v+1)}/>}
+        {tab==="calendar" && <CalendarView settings={settings} dataVersion={dataVersion}/>}
+        {tab==="reports"  && <ReportsView  settings={settings}/>}
+      </div>
+    </div>
+  );
+}
+
+// ─── 設定 ─────────────────────────────────────────────────
+function SetupView({settings, onSave, onApiKeyChange}){
+  const [sub,setSub] = useState("categories");
+  const [nc,  setNc] = useState({name:"",icon:PRESET_ICONS[0],color:PRESET_COLORS[0]});
+  const [nf,  setNf] = useState({name:"",amount:"",categoryId:""});
+
+  const [aiPrompt,    setAiPrompt]     = useState("");
+  const [aiLoading,   setAiLoading]    = useState(false);
+  const [aiSuggestions,setAiSuggestions]=useState([]);
+  const [aiToast,     setAiToast]      = useState("");
+
+  const showAiToast = msg => { setAiToast(msg); setTimeout(()=>setAiToast(""),2400); };
+
+  const generateCategories = async () => {
+    if(!aiPrompt.trim()) return;
+    setAiLoading(true); setAiSuggestions([]);
+    try{
+      const existing = settings.categories.map(c=>c.name).join("、")||"なし";
+      const raw = await callClaude([{role:"user",content:
+        `家計簿カテゴリをJSON配列のみで返してください。説明不要。\n`+
+        `状況:「${aiPrompt}」\n`+
+        `既存カテゴリ(重複不可):${existing}\n`+
+        `重要ルール:\n`+
+        `・状況に書かれていることに直結するカテゴリのみ提案する\n`+
+        `・状況と矛盾・無関係なカテゴリは絶対に出さない\n`+
+        `・例:「外食多め」→「外食費」を出す。「自炊費」は出さない\n`+
+        `4個。形式:[{"name":"名前","icon":"絵文字1つ","color":"#パステルカラー"}]`
+      }], 150);
+      const clean = raw.replace(/```[a-z]*\n?/gi,"").replace(/```/g,"").trim();
+      const m = clean.match(/\[[\s\S]*\]/);
+      if(!m) throw new Error("no array");
+      const list = JSON.parse(m[0]);
+      if(!Array.isArray(list)||list.length===0) throw new Error("empty");
+      const validated = list.map((item,i)=>({
+        name:  String(item.name||"カテゴリ").slice(0,12),
+        icon:  String(item.icon||"✨"),
+        color: /^#[0-9A-Fa-f]{6}$/.test(item.color) ? item.color : PRESET_COLORS[i%PRESET_COLORS.length],
+      }));
+      setAiSuggestions(validated);
+    }catch(e){ showAiToast("💦 生成に失敗しました。もう一度お試しください"); }
+    setAiLoading(false);
+  };
+
+  const addSuggestion = item => {
+    if(settings.categories.some(c=>c.name===item.name)){ showAiToast(`「${item.name}」は既に追加されています`); return; }
+    onSave({...settings, categories:[...settings.categories,{id:Date.now().toString(),...item}]});
+    setAiSuggestions(prev=>prev.filter(s=>s.name!==item.name));
+    showAiToast(`✨「${item.name}」を追加しました！`);
+  };
+
+  const addAllSuggestions = () => {
+    const newCats = aiSuggestions.filter(item=>!settings.categories.some(c=>c.name===item.name)).map(item=>({id:Date.now().toString()+Math.random(),...item}));
+    if(newCats.length===0){ showAiToast("すべて追加済みです"); return; }
+    onSave({...settings, categories:[...settings.categories,...newCats]});
+    setAiSuggestions([]);
+    showAiToast(`✨ ${newCats.length}件を追加しました！`);
+  };
+
+  const addCat   = () => { if(!nc.name.trim()) return; onSave({...settings,categories:[...settings.categories,{id:Date.now().toString(),...nc}]}); setNc({name:"",icon:PRESET_ICONS[0],color:PRESET_COLORS[0]}); showAiToast(`✨「${nc.name}」を追加しました！`); };
+  const remCat   = id => onSave({...settings, categories:settings.categories.filter(c=>c.id!==id)});
+  const addFixed = () => { if(!nf.name.trim()||!nf.amount) return; onSave({...settings,fixedCosts:[...settings.fixedCosts,{id:Date.now().toString(),...nf}]}); setNf({name:"",amount:"",categoryId:""}); };
+  const remFixed = id => onSave({...settings, fixedCosts:settings.fixedCosts.filter(f=>f.id!==id)});
+
+  const card      = {background:"white",borderRadius:20,padding:16,boxShadow:`0 4px 20px ${C.shadow}`,border:`1px solid ${C.border}`,marginBottom:13};
+  const cardTitle = {fontSize:14,fontWeight:700,color:C.text,marginBottom:12,paddingBottom:8,borderBottom:`2px dashed ${C.pinkL}`};
+  const lbl       = {fontSize:12,fontWeight:700,color:C.textSub,marginBottom:5,letterSpacing:.5,display:"block"};
+  const inp       = {width:"100%",padding:"10px 13px",border:`1.5px solid ${C.border}`,borderRadius:13,fontSize:14,background:"#FFF8FB",color:C.text};
+
+  return (
+    <div style={{position:"relative"}}>
+      {aiToast&&<div style={{position:"fixed",top:70,left:"50%",transform:"translateX(-50%)",zIndex:999,background:"white",border:`1.5px solid ${C.pinkL}`,borderRadius:20,padding:"10px 22px",boxShadow:`0 8px 28px ${C.shadow}`,fontWeight:700,fontSize:13,color:C.text,whiteSpace:"nowrap",animation:"popIn .3s ease forwards"}}>{aiToast}</div>}
+
+      <div style={{display:"flex",gap:8,marginBottom:14}}>
+        {[["categories","🏷️ カテゴリ"],["fixed","🏠 固定費"],["apikey","🔑 APIキー"]].map(([k,l])=>(
+          <button key={k} onClick={()=>setSub(k)} style={{flex:1,padding:"8px 4px",borderRadius:13,border:`2px solid ${sub===k?C.pink:C.border}`,background:sub===k?C.pinkL:"white",color:sub===k?C.text:C.textSub,fontFamily:font,fontWeight:700,fontSize:11,cursor:"pointer",transition:"all .2s"}}>{l}</button>
+        ))}
+      </div>
+
+      {sub==="categories"&&<>
+        {/* AI自動生成 */}
+        <div style={card}>
+          <p style={cardTitle}>🤖 AIでカテゴリを自動生成</p>
+          <p style={{fontSize:11,color:C.textSub,marginBottom:10,lineHeight:1.7}}>
+            あなたの生活スタイルを教えると、ぴったりのカテゴリを提案するよ✨<br/>
+            例：「子供2人・ペット・習い事あり」「一人暮らし・外食多め」
+          </p>
+          <input style={{...inp,marginBottom:10}} placeholder="例：小学生の子供がいて、ペットもいます" value={aiPrompt} onChange={e=>setAiPrompt(e.target.value)} onKeyDown={e=>e.key==="Enter"&&generateCategories()}/>
+          <PillBtn onClick={generateCategories} disabled={aiLoading||!aiPrompt.trim()} variant="lavender" full>
+            {aiLoading?"⏳ 生成中…":"✨ カテゴリを提案してもらう"}
+          </PillBtn>
+          {aiSuggestions.length>0&&(
+            <div style={{marginTop:14,animation:"slideUp .3s ease"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                <p style={{fontSize:12,fontWeight:700,color:C.text}}>💡 提案されたカテゴリ</p>
+                <PillBtn onClick={addAllSuggestions} variant="mint" size="sm">すべて追加</PillBtn>
+              </div>
+              {aiSuggestions.map((item,i)=>(
+                <div key={i} style={{display:"flex",alignItems:"center",gap:10,background:C.bgSoft,borderRadius:13,padding:"10px 12px",border:`1px solid ${C.border}`,marginBottom:8}}>
+                  <span style={{fontSize:22}}>{item.icon}</span>
+                  <div style={{flex:1}}><p style={{fontWeight:700,fontSize:13,color:C.text}}>{item.name}</p><div style={{width:40,height:5,borderRadius:3,background:item.color,marginTop:3}}/></div>
+                  <PillBtn onClick={()=>addSuggestion(item)} variant="primary" size="sm">＋ 追加</PillBtn>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        {/* 手動追加 */}
+        <div style={card}>
+          <p style={cardTitle}>✏️ 自分でカテゴリを追加</p>
+          <label style={lbl}>名前</label>
+          <input style={{...inp,marginBottom:10}} placeholder="例：推し活" value={nc.name} onChange={e=>setNc({...nc,name:e.target.value})}/>
+          <label style={lbl}>アイコン</label>
+          <div style={{display:"flex",flexWrap:"wrap",gap:5,marginBottom:10}}>
+            {PRESET_ICONS.map(ic=>(
+              <button key={ic} onClick={()=>setNc({...nc,icon:ic})} style={{width:34,height:34,borderRadius:9,border:nc.icon===ic?`2px solid ${C.pink}`:`1px solid ${C.border}`,background:nc.icon===ic?C.pinkL:"white",cursor:"pointer",fontSize:16,transition:"all .15s"}}>{ic}</button>
+            ))}
+          </div>
+          <label style={lbl}>カラー</label>
+          <div style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:13}}>
+            {PRESET_COLORS.map(cl=>(
+              <button key={cl} onClick={()=>setNc({...nc,color:cl})} style={{width:24,height:24,borderRadius:"50%",background:cl,cursor:"pointer",border:nc.color===cl?`3px solid ${C.text}`:"3px solid white",boxShadow:`0 2px 8px ${cl}`,transition:"all .15s"}}/>
+            ))}
+          </div>
+          <PillBtn onClick={addCat} full>＋ 追加する</PillBtn>
+        </div>
+        {/* 一覧 */}
+        <div style={card}>
+          <p style={cardTitle}>🏷️ カテゴリ一覧 ({settings.categories.length}件)</p>
+          {settings.categories.length===0&&<p style={{color:C.textLight,fontSize:13,textAlign:"center",padding:"8px 0"}}>まだありません</p>}
+          {settings.categories.map(c=>(
+            <div key={c.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 0",borderBottom:`1px dashed ${C.border}`}}>
+              <Tag icon={c.icon} name={c.name} color={c.color}/>
+              <div style={{flex:1,height:6,borderRadius:4,background:c.color}}/>
+              <PillBtn onClick={()=>remCat(c.id)} variant="danger" size="sm">✕</PillBtn>
+            </div>
+          ))}
+        </div>
+      </>}
+
+      {sub==="fixed"&&<>
+        <div style={card}>
+          <p style={cardTitle}>➕ 固定費を追加</p>
+          <label style={lbl}>項目名</label>
+          <input style={{...inp,marginBottom:10}} placeholder="例：家賃" value={nf.name} onChange={e=>setNf({...nf,name:e.target.value})}/>
+          <label style={lbl}>金額（円）</label>
+          <input style={{...inp,marginBottom:10}} type="number" placeholder="0" value={nf.amount} onChange={e=>setNf({...nf,amount:e.target.value})}/>
+          <label style={lbl}>カテゴリ（任意）</label>
+          <select style={{...inp,cursor:"pointer",marginBottom:13}} value={nf.categoryId} onChange={e=>setNf({...nf,categoryId:e.target.value})}>
+            <option value="">なし</option>
+            {settings.categories.map(c=><option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
+          </select>
+          <PillBtn onClick={addFixed} full>＋ 追加する</PillBtn>
+        </div>
+        <div style={card}>
+          <p style={cardTitle}>🏠 固定費一覧</p>
+          {settings.fixedCosts.length===0&&<p style={{color:C.textLight,fontSize:13,textAlign:"center",padding:"8px 0"}}>まだありません</p>}
+          {settings.fixedCosts.map(f=>{
+            const cat=settings.categories.find(c=>c.id===f.categoryId);
+            return (
+              <div key={f.id} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 0",borderBottom:`1px dashed ${C.border}`}}>
+                <div style={{flex:1}}><p style={{fontWeight:700,fontSize:13,color:C.text}}>{f.name}</p>{cat&&<Tag icon={cat.icon} name={cat.name} color={cat.color} small/>}</div>
+                <span style={{fontWeight:700,fontSize:15,color:C.pink}}>{fmt(f.amount)}</span>
+                <PillBtn onClick={()=>remFixed(f.id)} variant="danger" size="sm">✕</PillBtn>
+              </div>
+            );
+          })}
+          {settings.fixedCosts.length>0&&<div style={{textAlign:"right",marginTop:10,fontWeight:700,color:C.text,fontSize:15}}>合計：{fmt(settings.fixedCosts.reduce((s,f)=>s+Number(f.amount),0))}</div>}
+        </div>
+      </>}
+
+      {sub==="apikey"&&(
+        <div style={card}>
+          <p style={cardTitle}>🔑 API キーの変更</p>
+          <p style={{fontSize:12,color:C.textSub,marginBottom:12,lineHeight:1.7}}>
+            現在のAPIキー：<span style={{fontFamily:"monospace",color:C.text}}>{CLAUDE_API_KEY ? CLAUDE_API_KEY.substring(0,12)+"..." : "未設定"}</span>
+          </p>
+          <PillBtn onClick={()=>{ localStorage.removeItem('kakeibo-api-key'); CLAUDE_API_KEY=''; onApiKeyChange(); }} variant="danger" full>
+            🔄 API キーを変更する
+          </PillBtn>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── 今日の支出 ────────────────────────────────────────────
+function DailyView({settings, onDataChange}){
+  const [date,      setDate]      = useState(todayStr());
+  const [expenses,  setExpenses]  = useState([]);
+  const [loading,   setLoading]   = useState(false);
+  const [parsed,    setParsed]    = useState(null);
+  const [inputText, setInputText] = useState("");
+  const [imgPreview,setImgPreview]= useState(null);
+  const [manualOpen,setManualOpen]= useState(false);
+  const [mf,        setMf]        = useState({categoryId:"",amount:"",note:""});
+  const [toast,     setToast]     = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editForm,  setEditForm]  = useState({categoryId:"",amount:"",note:""});
+  const fileRef = useRef(null);
+
+  useEffect(()=>{
+    (async()=>{ setExpenses(await loadDayData(date)); })();
+  },[date]);
+
+  const saveExp = async list => {
+    setExpenses(list);
+    await saveDayData(date, list);
+    await loadMonthDataCached(date, true);
+    onDataChange();
+  };
+
+  const showToast = msg => { setToast(msg); setTimeout(()=>setToast(""),2400); };
+
+  const handleTextSubmit = async () => {
+    if(!inputText.trim()) return;
+    setLoading(true); setParsed(null);
+    const r = await parseNaturalInput(inputText, settings.categories);
+    if(r&&r.length>0){ setParsed(r); } else { showToast("💦 解析できませんでした。手動入力をお試しください"); }
+    setLoading(false);
+  };
+
+  const handleImageFile = async e => {
+    const file = e.target.files?.[0]; if(!file) return;
+    const reader = new FileReader();
+    reader.onload = async ev => {
+      const dataUrl = ev.target.result;
+      setImgPreview(dataUrl); setLoading(true); setParsed(null);
+      const b64 = dataUrl.split(",")[1];
+      const r = await parseReceipt(b64, settings.categories);
+      if(r&&r.length>0){ setParsed(r); } else { showToast("💦 レシートを読み取れませんでした"); }
+      setLoading(false);
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  const confirmParsed = async () => {
+    const newList = [...expenses,...parsed.map(p=>({id:Date.now().toString()+Math.random(),...p}))];
+    await saveExp(newList); setParsed(null); setInputText(""); setImgPreview(null);
+    showToast(`✨ ${parsed.length}件を追加しました！`);
+  };
+
+  const addManual = async () => {
+    if(!mf.categoryId||!mf.amount) return;
+    await saveExp([...expenses,{id:Date.now().toString(),...mf}]);
+    setMf({categoryId:"",amount:"",note:""}); setManualOpen(false); showToast("✨ 追加しました！");
+  };
+
+  const startEdit  = e => { setEditingId(e.id); setEditForm({categoryId:e.categoryId,amount:String(e.amount),note:e.note||""}); };
+  const cancelEdit = ()  => setEditingId(null);
+  const saveEdit   = async () => {
+    if(!editForm.categoryId||!editForm.amount) return;
+    await saveExp(expenses.map(e=>e.id===editingId?{...e,...editForm}:e));
+    setEditingId(null); showToast("✏️ 編集しました");
+  };
+  const removeExp = async id => { await saveExp(expenses.filter(e=>e.id!==id)); showToast("🗑️ 削除しました"); };
+
+  const dayTotal  = expenses.reduce((s,e)=>s+Number(e.amount),0);
+  const catTotals = {};
+  expenses.forEach(e=>{ catTotals[e.categoryId]=(catTotals[e.categoryId]||0)+Number(e.amount); });
+
+  const card      = {background:"white",borderRadius:20,padding:16,boxShadow:`0 4px 20px ${C.shadow}`,border:`1px solid ${C.border}`,marginBottom:13};
+  const cardTitle = {fontSize:14,fontWeight:700,color:C.text,marginBottom:12,paddingBottom:8,borderBottom:`2px dashed ${C.pinkL}`};
+  const inp       = {width:"100%",padding:"10px 13px",border:`1.5px solid ${C.border}`,borderRadius:13,fontSize:14,background:"#FFF8FB",color:C.text};
+
+  return (
+    <div>
+      <Toast msg={toast}/>
+
+      {/* 日付 */}
+      <div style={{...card,display:"flex",alignItems:"center",gap:10}}>
+        <span style={{fontSize:20}}>📅</span>
+        <input type="date" style={{...inp,flex:1}} value={date} onChange={e=>setDate(e.target.value)}/>
+      </div>
+
+      {/* 今日の支出入力 */}
+      <div style={card}>
+        <p style={cardTitle}>💸 今日の支出</p>
+        <p style={{fontSize:11,color:C.textSub,marginBottom:10,lineHeight:1.6}}>
+          「スーパー3000円」など自然な言葉でOK！複数行まとめて入力もできるよ📝<br/>
+          レシート写真 📷 からも読み取れるよ
+        </p>
+        <div style={{display:"flex",gap:7,marginBottom:10,alignItems:"flex-start"}}>
+          <textarea style={{...inp,flex:1,minHeight:80,resize:"vertical",lineHeight:1.7,paddingTop:11}}
+            placeholder={"例：スーパーで3000円\nコンビニ450円\nランチ900円"}
+            value={inputText}
+            onChange={e=>setInputText(e.target.value)}
+            onKeyDown={e=>{ if(e.key==="Enter"&&(e.ctrlKey||e.metaKey)){ e.preventDefault(); handleTextSubmit(); } }}
+          />
+          <button onClick={()=>fileRef.current?.click()} title="レシート読み取り" style={{width:42,height:42,borderRadius:13,flexShrink:0,cursor:"pointer",fontSize:19,border:`1.5px solid ${C.border}`,background:"white",display:"flex",alignItems:"center",justifyContent:"center",transition:"all .2s",marginTop:1}}>📷</button>
+          <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{display:"none"}} onChange={handleImageFile}/>
+        </div>
+        <p style={{fontSize:10,color:C.textLight,marginBottom:8,textAlign:"right"}}>Ctrl+Enter で送信</p>
+        <PillBtn onClick={handleTextSubmit} disabled={loading||!inputText.trim()} full>
+          {loading?"⏳ AI解析中…":"✨ カテゴリを自動判定する"}
+        </PillBtn>
+
+        {imgPreview&&<div style={{marginTop:10,borderRadius:12,overflow:"hidden",border:`1px solid ${C.border}`,maxHeight:150}}><img src={imgPreview} alt="receipt" style={{width:"100%",objectFit:"contain",maxHeight:150}}/></div>}
+
+        {parsed&&(
+          <div className="slideUp" style={{marginTop:12,background:"#FFF8FB",borderRadius:14,padding:"12px",border:`1.5px solid ${C.pinkL}`}}>
+            <p style={{fontSize:12,fontWeight:700,color:C.text,marginBottom:8}}>✅ これでよい？</p>
+            {parsed.map((p,i)=>{
+              const cat=settings.categories.find(c=>c.id===p.categoryId);
+              return (
+                <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:i<parsed.length-1?`1px dashed ${C.border}`:"none"}}>
+                  {cat?<Tag icon={cat.icon} name={cat.name} color={cat.color} small/>:<span style={{fontSize:12,color:C.textSub}}>不明</span>}
+                  <span style={{fontSize:12,color:C.textSub,flex:1}}>{p.note}</span>
+                  <span style={{fontWeight:700,color:C.pink,fontSize:14}}>{fmt(p.amount)}</span>
+                </div>
+              );
+            })}
+            <div style={{display:"flex",gap:8,marginTop:10}}>
+              <PillBtn onClick={confirmParsed} variant="mint" style={{flex:1}}>✓ 追加する</PillBtn>
+              <PillBtn onClick={()=>{setParsed(null);setImgPreview(null);}} variant="ghost" style={{flex:1}}>✕ キャンセル</PillBtn>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 手動入力 */}
+      <button onClick={()=>setManualOpen(v=>!v)} style={{width:"100%",padding:"9px",borderRadius:13,border:`1.5px dashed ${C.border}`,background:"white",color:C.textSub,fontFamily:font,fontSize:12,fontWeight:700,cursor:"pointer",marginBottom:13,transition:"all .2s"}}>
+        {manualOpen?"▲ 手動入力を閉じる":"▼ 手動でカテゴリ指定して入力"}
+      </button>
+
+      {manualOpen&&(
+        <div style={{...card,animation:"slideUp .3s ease"}}>
+          <p style={cardTitle}>✏️ 手動入力</p>
+          <p style={{fontSize:12,fontWeight:700,color:C.textSub,marginBottom:5}}>カテゴリ</p>
+          <select style={{...inp,cursor:"pointer",marginBottom:10}} value={mf.categoryId} onChange={e=>setMf({...mf,categoryId:e.target.value})}>
+            <option value="">選んでください</option>
+            {settings.categories.map(c=><option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
+          </select>
+          <p style={{fontSize:12,fontWeight:700,color:C.textSub,marginBottom:5}}>金額（円）</p>
+          <input style={{...inp,marginBottom:10}} type="number" placeholder="0" value={mf.amount} onChange={e=>setMf({...mf,amount:e.target.value})}/>
+          <p style={{fontSize:12,fontWeight:700,color:C.textSub,marginBottom:5}}>メモ（任意）</p>
+          <input style={{...inp,marginBottom:12}} placeholder="例：ランチ" value={mf.note} onChange={e=>setMf({...mf,note:e.target.value})}/>
+          <PillBtn onClick={addManual} full>＋ 追加する</PillBtn>
+        </div>
+      )}
+
+      {/* 本日合計 */}
+      {expenses.length>0&&(
+        <div style={{borderRadius:20,padding:"15px 20px",marginBottom:13,background:"linear-gradient(135deg,#FFE0EC 0%,#EDD5FF 100%)",border:`1px solid ${C.border}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <p style={{fontSize:11,fontWeight:700,color:C.textSub,letterSpacing:1}}>{fmtDate(date)} の合計</p>
+            <p style={{fontSize:26,fontWeight:700,color:C.text,letterSpacing:1}}>{fmt(dayTotal)}</p>
+          </div>
+          <span style={{fontSize:34,animation:"floatAnim 3s ease-in-out infinite"}}>💰</span>
+        </div>
+      )}
+
+      {/* カテゴリ別 */}
+      {expenses.length>0&&(
+        <div style={card}>
+          <p style={cardTitle}>📊 カテゴリ別</p>
+          {Object.entries(catTotals).sort(([,a],[,b])=>b-a).map(([catId,total])=>{
+            const cat=settings.categories.find(c=>c.id===catId); if(!cat) return null;
+            const pct = dayTotal>0?(total/dayTotal*100):0;
+            return (
+              <div key={catId} style={{marginBottom:12}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
+                  <Tag icon={cat.icon} name={cat.name} color={cat.color}/>
+                  <div style={{textAlign:"right"}}>
+                    <span style={{fontWeight:700,fontSize:14,color:C.text}}>{fmt(total)}</span>
+                    <span style={{fontSize:11,color:C.textLight,marginLeft:5}}>{pct.toFixed(0)}%</span>
+                  </div>
+                </div>
+                <div style={{height:7,background:"#F7EEF7",borderRadius:5,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${pct}%`,background:`linear-gradient(90deg,${cat.color}AA,${cat.color})`,borderRadius:5,transition:"width .5s ease"}}/>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* 支出一覧 */}
+      {expenses.length>0&&(
+        <div style={card}>
+          <p style={cardTitle}>🧾 支出一覧</p>
+          {[...expenses].reverse().map(e=>{
+            const cat      = settings.categories.find(c=>c.id===e.categoryId);
+            const isEditing = editingId===e.id;
+            return (
+              <div key={e.id} style={{borderBottom:`1px dashed ${C.border}`}}>
+                {isEditing?(
+                  <div style={{padding:"10px 0",animation:"slideUp .2s ease"}}>
+                    <p style={{fontSize:11,fontWeight:700,color:C.textSub,marginBottom:6}}>✏️ 編集中</p>
+                    <div style={{marginBottom:7}}>
+                      <p style={{fontSize:11,fontWeight:700,color:C.textSub,marginBottom:4}}>カテゴリ</p>
+                      <select style={{...inp,fontSize:13,cursor:"pointer"}} value={editForm.categoryId} onChange={e=>setEditForm({...editForm,categoryId:e.target.value})}>
+                        <option value="">選んでください</option>
+                        {settings.categories.map(c=><option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
+                      </select>
+                    </div>
+                    <div style={{display:"flex",gap:8,marginBottom:7}}>
+                      <div style={{flex:1}}>
+                        <p style={{fontSize:11,fontWeight:700,color:C.textSub,marginBottom:4}}>金額（円）</p>
+                        <input style={{...inp,fontSize:13}} type="number" value={editForm.amount} onChange={e=>setEditForm({...editForm,amount:e.target.value})}/>
+                      </div>
+                      <div style={{flex:1}}>
+                        <p style={{fontSize:11,fontWeight:700,color:C.textSub,marginBottom:4}}>メモ</p>
+                        <input style={{...inp,fontSize:13}} placeholder="メモ" value={editForm.note} onChange={e=>setEditForm({...editForm,note:e.target.value})}/>
+                      </div>
+                    </div>
+                    <div style={{display:"flex",gap:8}}>
+                      <PillBtn onClick={saveEdit}          variant="mint"   style={{flex:1}}>✓ 保存</PillBtn>
+                      <PillBtn onClick={()=>removeExp(e.id)} variant="danger" style={{flex:1}}>🗑️ 削除</PillBtn>
+                      <PillBtn onClick={cancelEdit}        variant="ghost"  style={{flex:1}}>キャンセル</PillBtn>
+                    </div>
+                  </div>
+                ):(
+                  <div style={{display:"flex",alignItems:"center",gap:10,padding:"9px 0",cursor:"pointer"}} onClick={()=>startEdit(e)}>
+                    <span style={{fontSize:19}}>{cat?.icon||"❓"}</span>
+                    <div style={{flex:1}}>
+                      {cat&&<Tag icon="" name={cat.name} color={cat.color} small/>}
+                      {e.note&&<p style={{fontSize:11,color:C.textSub,marginTop:2}}>{e.note}</p>}
+                    </div>
+                    <span style={{fontWeight:700,fontSize:15,color:C.text}}>{fmt(e.amount)}</span>
+                    <span style={{fontSize:16,color:C.textLight,marginLeft:2}}>›</span>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <p style={{fontSize:10,color:C.textLight,textAlign:"center",marginTop:10}}>タップして編集・削除できます</p>
+        </div>
+      )}
+
+      {expenses.length===0&&(
+        <div style={{textAlign:"center",color:C.textLight,marginTop:28,fontSize:14}}>
+          <p style={{fontSize:38,marginBottom:8,animation:"floatAnim 3s ease-in-out infinite"}}>🌷</p>
+          <p>まだ支出がありません</p>
+          <p style={{fontSize:12,marginTop:4}}>上から入力してみてね✨</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── カレンダー ────────────────────────────────────────────
+function CalendarView({settings, dataVersion}){
+  const today  = todayStr();
+  const [monthRef,    setMonthRef]   = useState(getMonthStart(today));
+  const [dailyTotals, setDailyTotals]= useState({});
+  const [dailyItems,  setDailyItems] = useState({});
+  const [loadingMonth,setLoadingMonth]= useState(false);
+  const [selected,    setSelected]   = useState(null);
+
+  const applyData = raw => {
+    const totals = {};
+    Object.entries(raw).forEach(([d,items])=>{ totals[d]=items.reduce((s,i)=>s+Number(i.amount),0); });
+    setDailyTotals(totals); setDailyItems(raw);
+  };
+
+  useEffect(()=>{
+    setSelected(null);
+    const forceReload = dataVersion > 0;
+    if(!forceReload && monthCache[monthRef]){
+      applyData(monthCache[monthRef]); setLoadingMonth(false); return;
+    }
+    setLoadingMonth(true);
+    loadMonthDataCached(monthRef, forceReload).then(raw=>{ applyData(raw); setLoadingMonth(false); });
+  },[monthRef, dataVersion]);
+
+  function buildGrid(){
+    const start=new Date(monthRef), year=start.getFullYear(), month=start.getMonth();
+    const daysInMonth=new Date(year,month+1,0).getDate(), firstDow=start.getDay();
+    const cells=[]; for(let i=0;i<firstDow;i++) cells.push(null);
+    for(let d=1;d<=daysInMonth;d++) cells.push(`${year}-${String(month+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`);
+    return cells;
+  }
+
+  const cells      = buildGrid();
+  const monthTotal = Object.values(dailyTotals).reduce((s,v)=>s+v,0);
+  const maxDay     = Object.values(dailyTotals).length>0 ? Math.max(...Object.values(dailyTotals)) : 1;
+
+  function cellBg(dateStr){
+    const amt=dailyTotals[dateStr]||0; if(amt===0) return "white";
+    const ratio=Math.min(amt/Math.max(maxDay,1),1);
+    return `rgb(255,${Math.round(214-ratio*80)|0},${Math.round(230-ratio*70)|0})`;
+  }
+
+  const DOW       = ["日","月","火","水","木","金","土"];
+  const card      = {background:"white",borderRadius:20,padding:16,boxShadow:`0 4px 20px ${C.shadow}`,border:`1px solid ${C.border}`,marginBottom:13};
+  const cardTitle = {fontSize:14,fontWeight:700,color:C.text,marginBottom:12,paddingBottom:8,borderBottom:`2px dashed ${C.pinkL}`};
+  const selItems  = selected ? dailyItems[selected]||[] : [];
+  const selTotal  = selItems.reduce((s,i)=>s+Number(i.amount),0);
+
+  const prevMonth = () => { const d=new Date(monthRef); d.setMonth(d.getMonth()-1); setMonthRef(getMonthStart(d.toISOString().split("T")[0])); };
+  const nextMonth = () => { const d=new Date(monthRef); d.setMonth(d.getMonth()+1); setMonthRef(getMonthStart(d.toISOString().split("T")[0])); };
+
+  return (
+    <div>
+      {/* 月ナビ */}
+      <div style={{...card,padding:"12px 16px"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <button onClick={prevMonth} style={{width:36,height:36,borderRadius:12,border:`1.5px solid ${C.border}`,background:C.bgSoft,cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center"}}>‹</button>
+          <div style={{textAlign:"center"}}>
+            <p style={{fontSize:17,fontWeight:700,color:C.text,fontFamily:font,letterSpacing:2}}>{fmtMonth(monthRef)}</p>
+            {!loadingMonth&&monthTotal>0&&<p style={{fontSize:12,color:C.textSub,marginTop:2}}>合計 <span style={{fontWeight:700,color:C.pink}}>{fmt(monthTotal)}</span></p>}
+          </div>
+          <button onClick={nextMonth} style={{width:36,height:36,borderRadius:12,border:`1.5px solid ${C.border}`,background:C.bgSoft,cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center"}}>›</button>
+        </div>
+      </div>
+
+      {/* グリッド */}
+      <div style={{...card,padding:"14px 10px"}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",marginBottom:6}}>
+          {DOW.map((d,i)=>(<div key={d} style={{textAlign:"center",fontSize:11,fontWeight:700,padding:"4px 0",color:i===0?"#E57373":i===6?"#7CB9E8":C.textSub}}>{d}</div>))}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:3,position:"relative"}}>
+          {loadingMonth&&<div style={{position:"absolute",inset:0,background:"rgba(255,245,250,.75)",borderRadius:10,zIndex:5,display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{fontSize:22,animation:"floatAnim 1s ease-in-out infinite"}}>🌸</span></div>}
+          {cells.map((dateStr,idx)=>{
+            if(!dateStr) return <div key={`b${idx}`}/>;
+            const dayNum    = parseInt(dateStr.split("-")[2]);
+            const dow       = new Date(dateStr).getDay();
+            const isToday   = dateStr===today;
+            const isSelected= dateStr===selected;
+            const amt       = dailyTotals[dateStr]||0;
+            const hasData   = amt>0;
+            return (
+              <button key={dateStr} onClick={()=>setSelected(isSelected?null:dateStr)} style={{borderRadius:12,border:isSelected?`2px solid ${C.pink}`:isToday?`2px solid ${C.lavender}`:`1px solid ${hasData?C.pinkL:C.border}`,background:isSelected?C.pinkL:cellBg(dateStr),cursor:"pointer",padding:"5px 2px 6px",display:"flex",flexDirection:"column",alignItems:"center",gap:2,transition:"all .15s",minHeight:52,boxShadow:isSelected?`0 3px 12px ${C.shadow}`:"none"}}>
+                <span style={{fontSize:12,fontWeight:isToday?700:600,lineHeight:1,color:isToday?C.pink:dow===0?"#E57373":dow===6?"#7CB9E8":C.text}}>
+                  {isToday?<span style={{background:C.pink,color:"white",borderRadius:"50%",width:18,height:18,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:11}}>{dayNum}</span>:dayNum}
+                </span>
+                {hasData?<span style={{fontSize:9,fontWeight:700,color:darken(C.pink),lineHeight:1.2,textAlign:"center"}}>{fmt(amt)}</span>:<span style={{fontSize:9,color:C.textLight}}>—</span>}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:6,marginTop:12,justifyContent:"flex-end"}}>
+          <span style={{fontSize:10,color:C.textLight}}>少</span>
+          {["#FFF5F8","#FFE0EC","#FFCCE0","#FFAACF","#FF85B8"].map(cl=>(<div key={cl} style={{width:12,height:12,borderRadius:3,background:cl,border:"1px solid #FFD6E7"}}/>))}
+          <span style={{fontSize:10,color:C.textLight}}>多</span>
+        </div>
+      </div>
+
+      {/* 選択日詳細 */}
+      {selected&&(
+        <div style={{...card,animation:"slideUp .25s ease",border:`1.5px solid ${C.pinkL}`}}>
+          <div style={{...cardTitle,display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <span>📋 {fmtDate(selected)} の支出</span>
+            <button onClick={()=>setSelected(null)} style={{border:"none",background:"none",cursor:"pointer",fontSize:16,color:C.textLight}}>✕</button>
+          </div>
+          {selItems.length===0?<p style={{color:C.textLight,fontSize:13,textAlign:"center",padding:"12px 0"}}>この日は支出なし 🌿</p>:(
+            <>
+              {(()=>{
+                const catT={};
+                selItems.forEach(e=>{ catT[e.categoryId]=(catT[e.categoryId]||0)+Number(e.amount); });
+                return Object.entries(catT).sort(([,a],[,b])=>b-a).map(([catId,total])=>{
+                  const cat=settings.categories.find(c=>c.id===catId); if(!cat) return null;
+                  const pct=selTotal>0?(total/selTotal*100):0;
+                  return (<div key={catId} style={{marginBottom:10}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}><Tag icon={cat.icon} name={cat.name} color={cat.color} small/><span style={{fontWeight:700,fontSize:13,color:C.text}}>{fmt(total)}</span></div><div style={{height:5,background:"#F7EEF7",borderRadius:4,overflow:"hidden"}}><div style={{height:"100%",width:`${pct}%`,background:`linear-gradient(90deg,${cat.color}99,${cat.color})`,borderRadius:4,transition:"width .4s ease"}}/></div></div>);
+                });
+              })()}
+              <div style={{borderTop:`1px dashed ${C.border}`,marginTop:8,paddingTop:8}}>
+                {selItems.map((e,i)=>{ const cat=settings.categories.find(c=>c.id===e.categoryId); return (<div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 0",borderBottom:i<selItems.length-1?`1px dashed ${C.border}`:"none"}}><span style={{fontSize:16}}>{cat?.icon||"❓"}</span><span style={{flex:1,fontSize:12,color:C.textSub}}>{e.note||cat?.name||"支出"}</span><span style={{fontWeight:700,fontSize:13,color:C.text}}>{fmt(e.amount)}</span></div>); })}
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:10,paddingTop:10,borderTop:`2px dashed ${C.pinkL}`}}>
+                <span style={{fontSize:12,fontWeight:700,color:C.textSub}}>合計</span>
+                <span style={{fontSize:18,fontWeight:700,color:C.pink}}>{fmt(selTotal)}</span>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* 月間サマリー */}
+      {!loadingMonth&&monthTotal>0&&(
+        <div style={card}>
+          <p style={cardTitle}>📊 月間サマリー</p>
+          {(()=>{
+            const catT={};
+            Object.values(dailyItems).flat().forEach(e=>{ catT[e.categoryId]=(catT[e.categoryId]||0)+Number(e.amount); });
+            return Object.entries(catT).sort(([,a],[,b])=>b-a).map(([catId,total])=>{
+              const cat=settings.categories.find(c=>c.id===catId); if(!cat) return null;
+              const pct=monthTotal>0?(total/monthTotal*100):0;
+              return (<div key={catId} style={{marginBottom:11}}><div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}><Tag icon={cat.icon} name={cat.name} color={cat.color}/><div style={{textAlign:"right"}}><span style={{fontWeight:700,fontSize:13,color:C.text}}>{fmt(total)}</span><span style={{fontSize:10,color:C.textLight,marginLeft:5}}>{pct.toFixed(0)}%</span></div></div><div style={{height:6,background:"#F7EEF7",borderRadius:4,overflow:"hidden"}}><div style={{height:"100%",width:`${pct}%`,background:`linear-gradient(90deg,${cat.color}99,${cat.color})`,borderRadius:4,transition:"width .5s ease"}}/></div></div>);
+            });
+          })()}
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:12,paddingTop:10,borderTop:`2px dashed ${C.pinkL}`}}>
+            <span style={{fontSize:13,fontWeight:700,color:C.textSub}}>月合計（変動費）</span>
+            <span style={{fontSize:20,fontWeight:700,color:C.pink}}>{fmt(monthTotal)}</span>
+          </div>
+        </div>
+      )}
+      {!loadingMonth&&monthTotal===0&&<div style={{textAlign:"center",color:C.textLight,marginTop:20,fontSize:14}}><p style={{fontSize:36,marginBottom:8,animation:"floatAnim 3s ease-in-out infinite"}}>🌸</p><p>この月はまだ支出がありません</p></div>}
+    </div>
+  );
+}
+
+// ─── レポート ──────────────────────────────────────────────
+function ReportsView({settings}){
+  const [mode,         setMode]         = useState(null);
+  const [rTab,         setRTab]         = useState("generate");
+  const [weekStart,    setWS]           = useState(getMonday(todayStr()));
+  const [monthRef,     setMR]           = useState(getMonthStart(todayStr()));
+  const [result,       setResult]       = useState("");
+  const [loading,      setLoading]      = useState(false);
+  const [prev,         setPrev]         = useState(null);
+  const [savedReports, setSavedReports] = useState([]);
+  const [viewingReport,setViewingReport]= useState(null);
+
+  useEffect(()=>{
+    (async()=>{ const raw=await sg("saved-reports"); if(raw) setSavedReports(JSON.parse(raw)); })();
+  },[]);
+
+  const saveReport = async () => {
+    if(!result||!mode) return;
+    const modes=[["weekly-summary","📊","週まとめ"],["weekly-analysis","🔍","週分析"],["monthly-summary","📅","月まとめ"],["monthly-analysis","💡","月分析"]];
+    const modeLabel = modes.find(m=>m[0]===mode)?.[2]||mode;
+    const isW  = mode.startsWith("weekly");
+    const label= isW ? `${fmtDate(weekStart)}〜${fmtDate(addDays(weekStart,6))}` : fmtMonth(monthRef);
+    const entry= { id:Date.now().toString(), mode, modeLabel, label, savedAt:new Date().toLocaleString("ja-JP",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"}), content:result };
+    const updated = [entry,...savedReports].slice(0,30);
+    setSavedReports(updated);
+    await ss("saved-reports", JSON.stringify(updated));
+    alert("✨ 保存しました！「履歴」タブから見返せます");
+  };
+
+  const deleteReport = async id => {
+    const updated = savedReports.filter(r=>r.id!==id);
+    setSavedReports(updated);
+    await ss("saved-reports", JSON.stringify(updated));
+    if(viewingReport?.id===id) setViewingReport(null);
+  };
+
+  const generate = async () => {
+    if(!mode) return;
+    setLoading(true); setResult("");
+    const isW  = mode.startsWith("weekly");
+    const start= isW ? weekStart : monthRef;
+    const end  = isW ? addDays(weekStart,6) : getMonthEnd(monthRef);
+    const expByDate = await loadRange(start, end);
+    const {catMap, grandTotal} = summarize(settings, expByDate);
+    const days = Math.max(Object.keys(expByDate).length, 1);
+    setPrev({grandTotal, days});
+    const fixedTotal = settings.fixedCosts.reduce((s,f)=>s+Number(f.amount), 0);
+    const catLines   = Object.values(catMap).filter(c=>c.total>0).sort((a,b)=>b.total-a.total).map(c=>`  ${c.icon}${c.name}: ${fmt(c.total)} (${c.items.length}件)`).join("\n");
+    const dailyLines = Object.entries(expByDate).map(([date,items])=>{
+      const s=items.reduce((ss,i)=>ss+Number(i.amount),0);
+      const d=items.map(i=>{ const cat=settings.categories.find(c=>c.id===i.categoryId); return `    ${cat?.name||"不明"} ${fmt(i.amount)}${i.note?` (${i.note})`:""}`; }).join("\n");
+      return `  ${fmtDate(date)}: ${fmt(s)}\n${d}`;
+    }).join("\n");
+    const fixedLines = settings.fixedCosts.map(f=>{ const cat=settings.categories.find(c=>c.id===f.categoryId); return `  ${f.name}: ${fmt(f.amount)}${cat?` (${cat.name})`:""}`; }).join("\n")||"  設定なし";
+
+    let prompt = "";
+    if(mode==="weekly-summary")  prompt=`家計アドバイザー。1週間支出データをまとめて。\n【期間】${fmtDate(start)}〜${fmtDate(end)}\n【固定費(月額)】${fixedLines} 合計:${fmt(fixedTotal)}\n【変動費明細】${dailyLines}\n【カテゴリ別】${catLines}\n【変動費合計】${fmt(grandTotal)} 【1日平均】${fmt(Math.round(grandTotal/days))}\n絵文字を使い親しみやすく：\n📊 カテゴリ別合計（金額・割合）\n📅 1日の平均支出\n📝 支出傾向（全体の特徴・使いすぎカテゴリ・良かった点）`;
+    else if(mode==="weekly-analysis")  prompt=`家計アドバイザー。1週間を詳しく分析して。\n【期間】${fmtDate(start)}〜${fmtDate(end)}\n【固定費】${fixedLines} 合計:${fmt(fixedTotal)}\n【変動費明細】${dailyLines}\n【カテゴリ別】${catLines} 合計:${fmt(grandTotal)}\n絵文字と具体的な数字で：\n💸 無駄な出費（具体的に）\n🎯 削減インパクト大トップ3（1.2.3.）\n🏠 固定費の見直し余地\n⚡ 今すぐできる節約アクション3つ（1.2.3.）\n📋 来週の最適予算（カテゴリ別）\n⚠️ 注意すべき支出パターン`;
+    else if(mode==="monthly-summary"){
+      const end2=getMonthEnd(monthRef); let wn=1; const ws=[];
+      for(let d=monthRef;d<=end2;){ const we=addDays(d,6)>end2?end2:addDays(d,6); const wt=Object.entries(expByDate).filter(([dt])=>dt>=d&&dt<=we).reduce((s,[,it])=>s+it.reduce((ss,i)=>ss+Number(i.amount),0),0); ws.push(`  第${wn}週(${fmtDate(d)}〜${fmtDate(we)}): ${fmt(wt)}`); d=addDays(we,1); wn++; }
+      prompt=`家計アドバイザー。1ヶ月をまとめて。\n【期間】${fmtMonth(monthRef)}\n【固定費】${fixedLines} 合計:${fmt(fixedTotal)}\n【変動費カテゴリ別】${catLines} 合計:${fmt(grandTotal)}\n【総支出】${fmt(grandTotal+fixedTotal)} 【1日平均】${fmt(Math.round(grandTotal/days))}\n【週別】${ws.join("\n")}\n絵文字と具体的な数字で：\n💰 1ヶ月の総支出\n🏠 固定費の内訳と合計\n📊 変動費カテゴリ別内訳\n📅 週別内訳\n📈 1日の平均支出\n📝 支出傾向（全体の特徴・増減ポイント・使いすぎカテゴリ・良かった点）`;
+    }
+    else if(mode==="monthly-analysis") prompt=`家計アドバイザー。1ヶ月を徹底分析して。\n【期間】${fmtMonth(monthRef)}\n【固定費】${fixedLines} 合計:${fmt(fixedTotal)}\n【変動費】${catLines} 合計:${fmt(grandTotal)}\n【総支出】${fmt(grandTotal+fixedTotal)}\n【全明細】${dailyLines}\n絵文字と具体的な数字で：\n🗑️ 無駄遣いランキング（1〜3位、削減可能額も）\n🏠 固定費の見直しポイント\n🎯 削減インパクト大トップ3\n⚖️ 理想の支出バランス\n📋 来月の最適予算（カテゴリ別）\n💰 貯金を増やすための具体プラン`;
+
+    try{ setResult(await callClaude([{role:"user",content:prompt}], 1200)); }
+    catch(e){ setResult(`エラー: ${e.message}\n\nAPIキーを確認してください（設定タブ→APIキー）`); }
+    setLoading(false);
+  };
+
+  const modes=[["weekly-summary","📊","週まとめ"],["weekly-analysis","🔍","週分析"],["monthly-summary","📅","月まとめ"],["monthly-analysis","💡","月分析"]];
+  const card      = {background:"white",borderRadius:20,padding:16,boxShadow:`0 4px 20px ${C.shadow}`,border:`1px solid ${C.border}`,marginBottom:13};
+  const cardTitle = {fontSize:14,fontWeight:700,color:C.text,marginBottom:12,paddingBottom:8,borderBottom:`2px dashed ${C.pinkL}`};
+  const inp       = {width:"100%",padding:"10px 13px",border:`1.5px solid ${C.border}`,borderRadius:13,fontSize:14,background:"#FFF8FB",color:C.text};
+
+  return (
+    <div>
+      <div style={{display:"flex",gap:8,marginBottom:14}}>
+        {[["generate","✨ 生成"],["history",`📁 履歴${savedReports.length>0?` (${savedReports.length})`:"(0)"}`]].map(([k,l])=>(
+          <button key={k} onClick={()=>{ setRTab(k); setViewingReport(null); }} style={{flex:1,padding:"10px",borderRadius:13,border:`2px solid ${rTab===k?C.pink:C.border}`,background:rTab===k?C.pinkL:"white",color:rTab===k?C.text:C.textSub,fontFamily:font,fontWeight:700,fontSize:13,cursor:"pointer",transition:"all .2s"}}>{l}</button>
+        ))}
+      </div>
+
+      {rTab==="generate"&&<>
+        <div style={card}>
+          <p style={cardTitle}>✨ レポートの種類</p>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            {modes.map(([k,ic,l])=>(
+              <button key={k} onClick={()=>{ setMode(k); setResult(""); setPrev(null); }} style={{padding:"14px 8px",borderRadius:16,cursor:"pointer",fontFamily:font,border:mode===k?`2px solid ${C.pink}`:`1.5px solid ${C.border}`,background:mode===k?"linear-gradient(135deg,#FFE0EC,#EDD5FF)":"white",color:mode===k?C.text:C.textSub,fontSize:12,fontWeight:700,transition:"all .2s",lineHeight:1.6}}>
+                <span style={{fontSize:18}}>{ic}</span><br/>{l}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {mode&&(
+          <div style={card}>
+            <p style={cardTitle}>📅 期間を選択</p>
+            {mode.startsWith("weekly")?(
+              <><p style={{fontSize:12,fontWeight:700,color:C.textSub,marginBottom:5}}>週の開始日（月曜日）</p><input type="date" style={inp} value={weekStart} onChange={e=>{ setWS(getMonday(e.target.value)); setResult(""); }}/><p style={{fontSize:11,color:C.textSub,marginTop:6}}>{fmtDate(weekStart)} 〜 {fmtDate(addDays(weekStart,6))}</p></>
+            ):(
+              <><p style={{fontSize:12,fontWeight:700,color:C.textSub,marginBottom:5}}>対象月</p><input type="month" style={inp} value={monthRef.substring(0,7)} onChange={e=>{ setMR(e.target.value+"-01"); setResult(""); }}/></>
+            )}
+          </div>
+        )}
+
+        {mode&&<PillBtn onClick={generate} disabled={loading} variant="lavender" full style={{padding:"14px",fontSize:14,marginBottom:13}}>{loading?"⏳ AI分析中…":`✨ ${modes.find(m=>m[0]===mode)?.[2]}を生成する`}</PillBtn>}
+
+        {prev&&!loading&&(
+          <div style={{...card,background:"linear-gradient(135deg,#FFE0EC,#EDD5FF)"}}>
+            <div style={{display:"flex",justifyContent:"space-around"}}>
+              {[["変動費合計",fmt(prev.grandTotal)],["1日平均",fmt(Math.round(prev.grandTotal/prev.days))]].map(([lb,val])=>(<div key={lb} style={{textAlign:"center"}}><p style={{fontSize:11,color:C.textSub,fontWeight:700}}>{lb}</p><p style={{fontSize:18,fontWeight:700,color:C.text}}>{val}</p></div>))}
+            </div>
+          </div>
+        )}
+
+        {result&&(
+          <div style={card}>
+            <div style={{...cardTitle,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span>{modes.find(m=>m[0]===mode)?.[1]} {modes.find(m=>m[0]===mode)?.[2]}レポート</span>
+              <PillBtn onClick={saveReport} variant="mint" size="sm">💾 保存</PillBtn>
+            </div>
+            <div style={{background:"#FFF8FB",border:`1px solid ${C.border}`,borderRadius:14,padding:"15px",fontSize:13,lineHeight:2.0,color:C.text,whiteSpace:"pre-wrap",fontFamily:font}}>{result}</div>
+          </div>
+        )}
+
+        {!mode&&<div style={{textAlign:"center",color:C.textLight,marginTop:28,fontSize:14}}><p style={{fontSize:38,marginBottom:10,animation:"floatAnim 3s ease-in-out infinite"}}>🌸</p><p>レポートの種類を選んでね</p><p style={{fontSize:12,marginTop:4}}>週・月ごとにAIが分析してくれるよ✨</p></div>}
+      </>}
+
+      {rTab==="history"&&<>
+        {viewingReport?(
+          <div style={card}>
+            <div style={{...cardTitle,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div><span style={{fontSize:14}}>{modes.find(m=>m[0]===viewingReport.mode)?.[1]} {viewingReport.modeLabel}</span><p style={{fontSize:11,color:C.textSub,marginTop:2}}>{viewingReport.label} · {viewingReport.savedAt}</p></div>
+              <PillBtn onClick={()=>setViewingReport(null)} variant="ghost" size="sm">← 戻る</PillBtn>
+            </div>
+            <div style={{background:"#FFF8FB",border:`1px solid ${C.border}`,borderRadius:14,padding:"15px",fontSize:13,lineHeight:2.0,color:C.text,whiteSpace:"pre-wrap",fontFamily:font}}>{viewingReport.content}</div>
+            <div style={{marginTop:12}}><PillBtn onClick={()=>deleteReport(viewingReport.id)} variant="danger" full>🗑️ このレポートを削除</PillBtn></div>
+          </div>
+        ):(
+          savedReports.length===0
+            ? <div style={{textAlign:"center",color:C.textLight,marginTop:28,fontSize:14}}><p style={{fontSize:38,marginBottom:10}}>📁</p><p>保存されたレポートはありません</p><p style={{fontSize:12,marginTop:4}}>生成タブでレポートを作って「💾 保存」を押してね</p></div>
+            : savedReports.map(r=>(
+                <div key={r.id} style={{...card,cursor:"pointer"}} onClick={()=>setViewingReport(r)}>
+                  <div style={{display:"flex",alignItems:"center",gap:12}}>
+                    <span style={{fontSize:24}}>{modes.find(m=>m[0]===r.mode)?.[1]||"📊"}</span>
+                    <div style={{flex:1}}><p style={{fontWeight:700,fontSize:13,color:C.text}}>{r.modeLabel} · {r.label}</p><p style={{fontSize:11,color:C.textSub,marginTop:2}}>保存日時: {r.savedAt}</p></div>
+                    <span style={{color:C.textLight,fontSize:16}}>›</span>
+                  </div>
+                </div>
+              ))
+        )}
+      </>}
+    </div>
+  );
+}
+
+// ─── アプリを起動 ──────────────────────────────────────────
+const container = document.getElementById('root');
+const appRoot   = ReactDOM.createRoot(container);
+appRoot.render(<App />);
