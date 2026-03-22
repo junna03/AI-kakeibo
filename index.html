@@ -4,19 +4,33 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>🌸 かけいぼ</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@400;700&family=Klee+One:wght@600&display=swap" rel="stylesheet">
+
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
   <style>
-    /* 📱 スマホ風のデザインに固定 */
-    body { background: #FFF5FA; font-family: sans-serif; margin: 0; display: flex; justify-content: center; }
-    #root { width: 100%; max-width: 480px; min-height: 100vh; background: white; box-shadow: 0 0 20px rgba(0,0,0,0.05); }
+    /* 🌸 Junnaさんの元のデザインを完全復元 */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #FFF5FA; font-family: 'Zen Maru Gothic', sans-serif; display: flex; justify-content: center; }
+    #root { width: 100%; max-width: 480px; min-height: 100vh; background: #FFF5FA; position: relative; }
     
-    .header { background: linear-gradient(135deg, #FFE0EC, #EDD5FF); padding: 20px; text-align: center; color: #5C3D6B; }
-    .card { margin: 15px; padding: 20px; border-radius: 20px; border: 1px solid #F0D8F0; background: #fff; }
-    .btn { background: #F48FB1; color: white; border: none; padding: 12px 20px; border-radius: 25px; width: 100%; font-weight: bold; cursor: pointer; margin-top: 10px; }
-    .btn-sub { background: none; color: #A08AB8; border: none; font-size: 12px; margin-top: 15px; cursor: pointer; text-decoration: underline; }
-    input { width: 100%; padding: 12px; margin: 10px 0; border: 1.5px solid #F0D8F0; border-radius: 12px; box-sizing: border-box; }
+    .header { background: linear-gradient(135deg, #FFE0EC 0%, #EDD5FF 55%, #C5EDF5 100%); padding: 25px; text-align: center; border-bottom: 1px solid #F0D8F0; }
+    .header h1 { font-family: 'Klee One', serif; color: #5C3D6B; letter-spacing: 8px; font-size: 24px; }
+    
+    .nav { display: flex; background: white; border-bottom: 1px solid #F0D8F0; position: sticky; top: 0; z-index: 10; }
+    .nav-btn { flex: 1; padding: 15px; border: none; background: none; font-size: 11px; font-weight: bold; color: #A08AB8; cursor: pointer; border-bottom: 3px solid transparent; }
+    .nav-btn.active { color: #5C3D6B; border-bottom: 3px solid #F48FB1; background: linear-gradient(to bottom, #FFF0F7, white); }
+
+    .card { background: white; margin: 15px; padding: 20px; border-radius: 20px; border: 1px solid #F0D8F0; box-shadow: 0 4px 15px rgba(244,143,177,0.1); }
+    .input-group { margin-bottom: 15px; }
+    .input-group label { display: block; font-size: 12px; font-weight: bold; color: #A08AB8; margin-bottom: 5px; }
+    input { width: 100%; padding: 12px; border: 1.5px solid #F0D8F0; border-radius: 12px; background: #FFF8FB; font-size: 14px; }
+    
+    .main-btn { width: 100%; padding: 14px; border-radius: 30px; border: none; background: linear-gradient(135deg, #F9A8C9, #F48FB1); color: white; font-weight: bold; cursor: pointer; box-shadow: 0 4px 12px rgba(244,143,177,0.3); }
+    .skip-btn { background: none; border: none; color: #CDB8DC; font-size: 12px; text-decoration: underline; cursor: pointer; margin-top: 15px; }
   </style>
 </head>
 <body>
@@ -27,64 +41,89 @@
 
     function App() {
       const [view, setView] = useState('loading'); // loading, setup, main
+      const [tab, setTab] = useState('daily');
 
       useEffect(() => {
-        // 起動時にデータをチェック
-        const savedKey = localStorage.getItem('kakeibo-api-key');
-        const skipped = localStorage.getItem('kakeibo-api-skipped');
+        // 以前の「詰まり」を解消するために、初回だけフラグを確認
+        const hasKey = localStorage.getItem('kakeibo-api-key');
+        const isSkipped = localStorage.getItem('kakeibo-api-skipped');
         
-        if (savedKey || skipped === 'true') {
+        if (hasKey || isSkipped) {
           setView('main');
         } else {
           setView('setup');
         }
       }, []);
 
-      // APIキーを後回しにして進む
-      const skipApiKey = () => {
+      const handleSkip = () => {
         localStorage.setItem('kakeibo-api-skipped', 'true');
         setView('main');
       };
 
-      if (view === 'loading') return <div style={{textAlign:'center', padding:50}}>🌸</div>;
+      if (view === 'loading') return <div style={{textAlign:'center', padding:100, fontSize:40}}>🌸</div>;
 
-      // 🔑 設定画面（スキップボタン付き）
+      // 🔑 設定画面（スキップしてすぐ始められるようにしました）
       if (view === 'setup') return (
-        <div>
+        <div style={{textAlign:'center'}}>
           <div className="header"><h1>🌸 設定</h1></div>
           <div className="card">
-            <p style={{fontSize:14, color:'#5C3D6B'}}>APIキーを入れるとAIがレシートを読んでくれますが、<b>入れなくても家計簿は使えます！</b></p>
-            <input id="key-input" type="password" placeholder="sk-ant-..." />
-            <button className="btn" onClick={() => {
+            <p style={{fontSize:14, color:'#5C3D6B', lineHeight:1.6, marginBottom:20}}>
+              APIキーを設定するとAI機能が使えますが、<br/><b>設定しなくても家計簿は使えます！</b>
+            </p>
+            <div className="input-group">
+              <label>Anthropic APIキー（任意）</label>
+              <input id="key-input" type="password" placeholder="sk-ant-..." />
+            </div>
+            <button className="main-btn" onClick={() => {
               const val = document.getElementById('key-input').value;
               if(val.startsWith('sk-ant-')){
                 localStorage.setItem('kakeibo-api-key', val);
                 setView('main');
-              } else { alert("キーを入力するか、下のスキップを押してください"); }
-            }}>キーを保存してはじめる</button>
-            
-            <center><button className="btn-sub" onClick={skipApiKey}>今は設定せずに、すぐにはじめる →</button></center>
+              } else { alert("キーを入力するか、下のスキップを押してください✨"); }
+            }}>保存してはじめる</button>
+            <br/>
+            <button className="skip-btn" onClick={handleSkip}>今は設定せずに、すぐにはじめる →</button>
           </div>
         </div>
       );
 
-      // 🏠 メイン画面（スマホ仕様）
+      // 🏠 メイン画面（Junnaさんの元のデザイン構成）
       return (
         <div>
-          <div className="header">
-            <h1 style={{letterSpacing:5}}>🌸 かけいぼ</h1>
-          </div>
-          
-          <div className="card">
-            <h2 style={{fontSize:16, color:'#5C3D6B', marginBottom:10}}>今日のしゅっぴ</h2>
-            <p style={{fontSize:13, color:'#A08AB8'}}>ここに入力してね✨</p>
-            <input type="text" placeholder="例：コンビニ 500円" />
-            <button className="btn">保存する</button>
-          </div>
+          <header className="header">
+            <h1>🌸 かけいぼ</h1>
+          </header>
 
-          <div style={{padding:'0 20px', fontSize:12, color:'#CDB8DC', textAlign:'center'}}>
-            <p>※スマホで見やすいサイズに固定しています</p>
-            <button onClick={() => { localStorage.clear(); location.reload(); }} style={{background:'none', border:'none', color:'#CDB8DC', marginTop:20}}>データをリセットして設定に戻る</button>
+          <nav className="nav">
+            <button className={`nav-btn ${tab==='daily'?'active':''}`} onClick={()=>setTab('daily')}>📅<br/>今日</button>
+            <button className={`nav-btn ${tab==='cal'?'active':''}`} onClick={()=>setTab('cal')}>🗓️<br/>カレンダー</button>
+            <button className={`nav-btn ${tab==='report'?'active':''}`} onClick={()=>setTab('report')}>✨<br/>レポート</button>
+            <button className={`nav-btn ${tab==='set'?'active':''}`} onClick={()=>setTab('set')}>🌸<br/>設定</button>
+          </nav>
+
+          <main style={{paddingBottom: 50}}>
+            {tab === 'daily' && (
+              <div className="card">
+                <h2 style={{fontSize:16, color:'#5C3D6B', marginBottom:15}}>今日のしゅっぴ</h2>
+                <div className="input-group">
+                  <input type="text" placeholder="例：コンビニ 500円" />
+                </div>
+                <button className="main-btn">✨ 保存する</button>
+              </div>
+            )}
+            
+            {tab !== 'daily' && (
+              <div style={{textAlign:'center', padding:40, color:'#A08AB8', fontSize:14}}>
+                <p>中身を順番に戻していきますね✨</p>
+                <p style={{marginTop:10}}>まずはこの画面が表示されましたか？</p>
+              </div>
+            )}
+          </main>
+
+          <div style={{textAlign:'center', padding:20}}>
+             <button onClick={() => { localStorage.clear(); location.reload(); }} style={{background:'none', border:'none', color:'#CDB8DC', fontSize:10}}>
+               【緊急用】データをリセットする
+             </button>
           </div>
         </div>
       );
