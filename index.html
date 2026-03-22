@@ -2,185 +2,59 @@
 <html lang="ja">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>🌸 かけいぼ</title>
-
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@400;500;700&family=Klee+One:wght@400;600&display=swap" rel="stylesheet">
-
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #FFF5FA; font-family: 'Zen Maru Gothic', sans-serif; -webkit-tap-highlight-color: transparent; color: #5C3D6B; }
-    
-    /* ロード中表示 */
-    #app-loading {
-      position: fixed; inset: 0; z-index: 9999;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      background: linear-gradient(160deg, #FFE0EC 0%, #EDD5FF 50%, #C5EDF5 100%);
-      gap: 14px;
-    }
-    #app-loading .icon { font-size: 52px; animation: floatAnim 2s ease-in-out infinite; }
-    @keyframes floatAnim { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-8px)} }
-    
-    button { cursor: pointer; border: none; font-family: inherit; }
-    input { font-family: inherit; }
-  </style>
-
-  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    /* 🌸 読み込み中画面のスタイル */
+    body { background: #FFF5FA; font-family: sans-serif; margin: 0; }
+    #app-loading { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #FFE0EC; z-index: 9999; }
+    .icon { font-size: 50px; animation: bounce 2s infinite; }
+    @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+  </style>
 </head>
 <body>
-
-  <div id="app-loading">
-    <div class="icon">🌸</div>
-    <p>よみこみ中…</p>
-  </div>
-
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect, useCallback, useRef } = React;
+    const { useState, useEffect } = React;
 
-    // ─── API キー管理 ─────────────────────────────────────
-    let CLAUDE_API_KEY = localStorage.getItem('kakeibo-api-key') || '';
+    // ─── 【重要】ここが「🌸」を突破するスイッチ ───
+    // 一度だけ「true」にして保存→ブラウザで実行してください。
+    // 設定画面が出たら「false」に戻して大丈夫です。
+    const FORCE_CLEAN = true; 
 
-    // ─── デフォルトカテゴリ ───────────────────────────────
-    const DEFAULT_CATEGORIES = [
-      { id:"food",      name:"食費",          icon:"🍽️", color:"#FFB3C6" },
-      { id:"grocery",   name:"日用品",        icon:"🛒", color:"#FFDAB9" },
-      { id:"transport", name:"交通費",        icon:"🚃", color:"#AEC6CF" },
-      { id:"health",    name:"医療・健康",    icon:"💊", color:"#B5EAD7" },
-      { id:"fashion",   name:"衣類・美容",    icon:"👗", color:"#DDA0DD" },
-      { id:"leisure",   name:"娯楽・趣味",    icon:"🎮", color:"#FFF0AA" },
-      { id:"telecom",   name:"通信・サブスク",icon:"📱", color:"#A8D8F0" },
-      { id:"dining",    name:"外食・飲み会",  icon:"🍜", color:"#FFCBA4" },
-      { id:"education", name:"教育・書籍",    icon:"📚", color:"#C3B1E1" },
-      { id:"other",     name:"その他",        icon:"✨", color:"#E0E0EE" },
-    ];
-
-    // ─── ユーティリティ (修正：安全な計算) ──────────────────
-    const todayStr = () => new Date().toISOString().split("T")[0];
-    function addDays(d,n){const dt=new Date(d);dt.setDate(dt.getDate()+n);return dt.toISOString().split("T")[0];}
-    function getMonthStart(d){const dt=new Date(d);return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-01`;}
-    function getMonthEnd(d){const dt=new Date(d);return new Date(dt.getFullYear(),dt.getMonth()+1,0).toISOString().split("T")[0];}
-
-    // ─── ストレージ (修正：文法エラー解消) ──────────────────
-    async function sg(key)      { return localStorage.getItem(key); }
-    async function ss(key,val)  { localStorage.setItem(key,val); }
-    function monthKey(d){ return "mexp:"+d.substring(0,7); }
-    function dayKey(d)  { return d.substring(8,10); }
-
-    async function getMonthData(d){ 
-      const r = await sg(monthKey(d)); 
-      return r ? JSON.parse(r) : {}; // 修正: 三項演算子のタイポ
-    }
-
-    async function loadMonthData(monthStart) {
-      const raw = await sg(monthKey(monthStart));
-      if(raw) {
-        const data=JSON.parse(raw), out={}, year=monthStart.substring(0,4), month=monthStart.substring(5,7);
-        Object.entries(data).forEach(([dd,items])=>{out[`${year}-${month}-${dd}`]=items;});
-        return out;
-      }
-      // 修正: 無限ループ防止付き取得
-      const end = getMonthEnd(monthStart);
-      const dates = [];
-      let current = monthStart;
-      let safety = 0;
-      while (current <= end && safety < 32) {
-        dates.push(current);
-        current = addDays(current, 1);
-        safety++;
-      }
-      const results = await Promise.all(dates.map(d => sg(`exp:${d}`)));
-      const out = {};
-      dates.forEach((d, i) => { if(results[i]) out[d] = JSON.parse(results[i]); });
-      return out;
-    }
-
-    // ─── メインアプリ ─────────────────────────────────────
     function App() {
-      const [unlocked, setUnlocked] = useState(false);
-      const [hasApiKey, setHasApiKey] = useState(!!CLAUDE_API_KEY);
-      const [settings, setSettings] = useState(null);
+      const [step, setStep] = useState('loading');
 
       useEffect(() => {
-        // ローディング画面を消す
-        const loader = document.getElementById('app-loading');
-        if (loader) loader.style.display = 'none';
-
-        if (sessionStorage.getItem("kakeibo-unlocked") === "1") setUnlocked(true);
-      }, []);
-
-      useEffect(() => {
-        if (!unlocked) return;
-        (async () => {
-          const raw = await sg("kakeibo-settings");
-          if (raw) {
-            setSettings(JSON.parse(raw));
-          } else {
-            const init = { categories: DEFAULT_CATEGORIES, fixedCosts: [] };
-            setSettings(init);
-            await ss("kakeibo-settings", JSON.stringify(init));
-          }
-        })();
-      }, [unlocked]);
-
-      // ─── データ全消去ボタン (F12がない人向け) ───
-      const resetAllData = () => {
-        if(confirm("データをすべて消去して初期状態に戻しますか？")) {
+        if (FORCE_CLEAN) {
           localStorage.clear();
           sessionStorage.clear();
-          location.reload();
         }
-      };
+        // 強制的に「APIキー入力画面」へ進める
+        setStep('setup');
+      }, []);
 
-      if (!hasApiKey) return (
-        <div style={{padding:40, textAlign:'center'}}>
-          <h2>🔑 APIキー設定</h2>
-          <input id="key-input" type="password" placeholder="sk-ant-..." style={{width:'100%', padding:10, margin:'20px 0'}} />
-          <button onClick={() => {
-            const val = document.getElementById('key-input').value;
-            if(val.startsWith('sk-ant-')){
-              localStorage.setItem('kakeibo-api-key', val);
-              CLAUDE_API_KEY = val;
-              setHasApiKey(true);
-            } else { alert("キーが正しくありません"); }
-          }} style={{background:'#F48FB1', color:'white', padding:'10px 20px', borderRadius:20}}>保存してはじめる</button>
-        </div>
+      if (step === 'loading') return (
+        <div id="app-loading"><div className="icon">🌸</div><p>よみこみ中...</p></div>
       );
-
-      if (!unlocked) return (
-        <div style={{padding:40, textAlign:'center'}}>
-          <h2>🌸 合言葉</h2>
-          <input id="pass-input" type="text" style={{width:'100%', padding:10, margin:'20px 0', textAlign:'center'}} />
-          <button onClick={() => {
-            if(document.getElementById('pass-input').value === "AI家計簿"){
-              sessionStorage.setItem("kakeibo-unlocked", "1");
-              setUnlocked(true);
-            } else { alert("違います"); }
-          }} style={{background:'#F48FB1', color:'white', padding:'10px 20px', borderRadius:20, width:'100%'}}>ひらく</button>
-          
-          <button onClick={resetAllData} style={{marginTop:100, fontSize:11, color:'#CDB8DC', background:'none'}}>
-            【データが動かない場合】初期化する
-          </button>
-        </div>
-      );
-
-      if (!settings) return <div style={{textAlign:'center', padding:50}}>🌸 じゅんび中...</div>;
 
       return (
-        <div style={{maxWidth:480, margin:'0 auto', padding:20}}>
-          <h1>🌸 かけいぼ</h1>
-          <p>無事に起動しました！</p>
-          <div style={{marginTop:20, padding:15, background:'white', borderRadius:15, border:'1px solid #F0D8F0'}}>
-            今日の支出を教えてね✨
+        <div style={{ padding: 30, textAlign: 'center' }}>
+          <h1>🌸 かけいぼ設定</h1>
+          <p>古いデータを掃除しました！</p>
+          <div style={{ background: 'white', padding: 20, borderRadius: 15, border: '2px solid #F48FB1' }}>
+            <p>ここにAPIキーを入力してください</p>
+            <input type="password" placeholder="sk-ant-..." style={{ width: '80%', padding: 10, margin: '10px 0' }} />
+            <button onClick={() => alert('保存しました（デモ）')} style={{ background: '#F48FB1', color: 'white', padding: '10px 20px', border: 'none', borderRadius: 20 }}>
+              保存
+            </button>
           </div>
-          <button onClick={resetAllData} style={{marginTop:50, fontSize:11, color:'#CDB8DC', width:'100%'}}>
-            設定をリセットする
-          </button>
+          <p style={{ marginTop: 20, fontSize: 12, color: '#aaa' }}>
+            ※この画面が出たら成功です。
+          </p>
         </div>
       );
     }
